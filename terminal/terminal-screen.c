@@ -968,6 +968,8 @@ terminal_screen_get_child_environment (TerminalScreen *screen)
           || strcmp (*p, "WINDOWID") == 0
           || strcmp (*p, "GNOME_DESKTOP_ICON") == 0
           || strcmp (*p, "COLORTERM") == 0
+          || strcmp (*p, "XDG_ACTIVATION_TOKEN") == 0
+          || strcmp (*p, "DESKTOP_STARTUP_ID") == 0
           || strcmp (*p, "DISPLAY") == 0
           || strcmp (*p, "WAYLAND_DISPLAY") == 0
           || strcmp (*p, "TERM") == 0)
@@ -1322,10 +1324,34 @@ terminal_screen_update_colors (TerminalScreen *screen)
 static void
 terminal_screen_update_misc_bell (TerminalScreen *screen)
 {
-  gboolean bval;
-  g_object_get (G_OBJECT (screen->preferences), "misc-bell", &bval, NULL);
-  vte_terminal_set_audible_bell (VTE_TERMINAL (screen->terminal), bval);
-  g_signal_connect (screen->terminal, "bell", G_CALLBACK (terminal_screen_urgent_bell), screen);
+  gboolean audible = FALSE;
+  gboolean urgent = FALSE;
+  GtkWidget *toplevel;
+
+  g_object_get (G_OBJECT (screen->preferences),
+                "misc-bell", &audible,
+                "misc-bell-urgent", &urgent,
+                NULL);
+
+  vte_terminal_set_audible_bell (VTE_TERMINAL (screen->terminal), audible);
+
+  /* Ensure we don't accumulate duplicate handlers when preferences reload. */
+  g_signal_handlers_disconnect_by_func (screen->terminal,
+                                        G_CALLBACK (terminal_screen_urgent_bell),
+                                        screen);
+
+  if (urgent)
+    {
+      g_signal_connect (screen->terminal, "bell",
+                        G_CALLBACK (terminal_screen_urgent_bell), screen);
+    }
+  else
+    {
+      /* Clear stale urgency when bell-urgent is disabled. */
+      toplevel = gtk_widget_get_toplevel (GTK_WIDGET (screen));
+      if (GTK_IS_WINDOW (toplevel))
+        gtk_window_set_urgency_hint (GTK_WINDOW (toplevel), FALSE);
+    }
 }
 
 
@@ -2373,8 +2399,7 @@ terminal_screen_set_window_geometry_hints (TerminalScreen *screen,
   gtk_window_set_geometry_hints (window,
                                  NULL,
                                  &screen->hints,
-                                 GDK_HINT_RESIZE_INC
-                                   | GDK_HINT_MIN_SIZE
+                                 GDK_HINT_MIN_SIZE
                                    | GDK_HINT_BASE_SIZE);
 }
 
