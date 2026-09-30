@@ -29,7 +29,8 @@ This fork can detect local file paths in output when the foreground PTY
 application is listed by the `misc-auto-detect-file-path-apps` preference. The
 default allowlist covers Fish, Codex, Antigravity, Gemini, and AGY. Existing
 files open through their normal desktop handler; files that need selection are
-opened through `pcmanfm`. Missing paths use the optional `unearth` fallback asynchronously.
+opened through the executable named by `misc-hyperlink-file-manager` (normally
+`pcmanfm`). Missing paths use the optional `unearth` fallback asynchronously.
 
 The fallback accepts hidden and extensionless names, uses a case-sensitive
 search, preserves non-UTF-8 filename bytes through Unearth's lossless `%XX`

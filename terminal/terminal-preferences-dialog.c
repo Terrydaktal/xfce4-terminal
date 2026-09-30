@@ -1655,6 +1655,26 @@ terminal_preferences_dialog_init (TerminalPreferencesDialog *dialog)
   gtk_label_set_mnemonic_widget (GTK_LABEL (label), entry);
   gtk_widget_show (entry);
 
+  /* File-manager selection is intentionally configurable because the
+   * ?select= URI extension is not shared by every desktop file manager. */
+  row++;
+  label = gtk_label_new_with_mnemonic (_("File manager for _selection links:"));
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0f);
+  gtk_widget_set_tooltip_text (label, _("Executable used for file links that select a file in its parent directory."));
+  gtk_grid_attach (GTK_GRID (grid), label, 0, row, 1, 1);
+  gtk_widget_show (label);
+
+  entry = gtk_entry_new ();
+  gtk_widget_set_tooltip_text (entry, _("Executable name or absolute path, normally pcmanfm."));
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-hyperlink-file-manager",
+                          G_OBJECT (entry), "text",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+  gtk_widget_set_hexpand (entry, TRUE);
+  gtk_grid_attach (GTK_GRID (grid), entry, 1, row, 1, 1);
+  terminal_gtk_label_set_a11y_relation (GTK_LABEL (label), entry);
+  gtk_label_set_mnemonic_widget (GTK_LABEL (label), entry);
+  gtk_widget_show (entry);
+
   /* next row */
   row++;
 

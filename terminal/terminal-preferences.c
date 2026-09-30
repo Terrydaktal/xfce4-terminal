@@ -120,6 +120,7 @@ enum
   PROP_MISC_HYPERLINK_TOOLTIPS_ENABLED,
   PROP_MISC_AUTO_DETECT_FILE_PATHS,
   PROP_MISC_AUTO_DETECT_FILE_PATH_APPS,
+  PROP_MISC_HYPERLINK_FILE_MANAGER,
   PROP_MISC_HYPERLINK_INSERT_BUTTON,
   PROP_MISC_HYPERLINK_INSERT_MODIFIER,
   PROP_MISC_HYPERLINK_INSERT_MIDDLE_CLICK,
@@ -1152,6 +1153,19 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
                          NULL,
                          "MiscAutoDetectFilePathApps",
                          "fish;codex;antigravity;gemini;agy",
+                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-file-manager:
+   *
+   * Executable used for file://?select= links that need file-manager
+   * selection behavior.
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_FILE_MANAGER] =
+    g_param_spec_string ("misc-hyperlink-file-manager",
+                         NULL,
+                         "MiscHyperlinkFileManager",
+                         "pcmanfm",
                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   /**

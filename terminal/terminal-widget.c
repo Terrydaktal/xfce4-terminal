@@ -164,7 +164,8 @@ terminal_widget_open_parent_path_candidate (TerminalWidget *widget,
                                             gboolean require_allowlist);
 static gboolean
 terminal_widget_open_pcmanfm_selection_uri (GtkWindow *window,
-                                            const gchar *uri);
+                                            const gchar *uri,
+                                            TerminalWidget *widget);
 static void
 terminal_widget_update_highlight_urls (TerminalWidget *widget);
 static gboolean
@@ -1762,7 +1763,7 @@ terminal_widget_open_parent_selection_uri (TerminalWidget *widget,
   toplevel = gtk_widget_get_toplevel (GTK_WIDGET (widget));
   if (GTK_IS_WINDOW (toplevel))
     window = GTK_WINDOW (toplevel);
-  result = terminal_widget_open_pcmanfm_selection_uri (window, selection_uri);
+  result = terminal_widget_open_pcmanfm_selection_uri (window, selection_uri, widget);
 
 out:
   g_clear_object (&parent);
@@ -2655,12 +2656,12 @@ terminal_widget_open_uri (TerminalWidget *widget,
 
   if (type == PATTERN_TYPE_FILE && terminal_widget_is_pcmanfm_selection_uri (uri))
     {
-      terminal_widget_open_pcmanfm_selection_uri (window, uri);
+      terminal_widget_open_pcmanfm_selection_uri (window, uri, widget);
     }
   else if (type == PATTERN_TYPE_FILE
            && (selection_uri = terminal_widget_get_pcmanfm_selection_fallback_uri (uri)) != NULL)
     {
-      terminal_widget_open_pcmanfm_selection_uri (window, selection_uri);
+      terminal_widget_open_pcmanfm_selection_uri (window, selection_uri, widget);
     }
   else if (type == PATTERN_TYPE_FILE
            && (missing_path = g_filename_from_uri (uri, NULL, NULL)) != NULL
@@ -2805,23 +2806,37 @@ out:
 
 static gboolean
 terminal_widget_open_pcmanfm_selection_uri (GtkWindow *window,
-                                            const gchar *uri)
+                                            const gchar *uri,
+                                            TerminalWidget *widget)
 {
-  gchar *pcmanfm;
+  gchar *configured_command = NULL;
+  gchar *file_manager = NULL;
   gchar *argv[3];
   GError *error = NULL;
   gboolean result;
 
-  pcmanfm = g_find_program_in_path ("pcmanfm");
-  if (pcmanfm == NULL)
+  g_object_get (G_OBJECT (widget->preferences),
+                "misc-hyperlink-file-manager", &configured_command,
+                NULL);
+  if (configured_command == NULL || *configured_command == '\0')
+    {
+      g_free (configured_command);
+      configured_command = g_strdup ("pcmanfm");
+    }
+
+  file_manager = g_path_is_absolute (configured_command)
+                   ? g_strdup (configured_command)
+                   : g_find_program_in_path (configured_command);
+  if (file_manager == NULL)
     {
       g_set_error (&error, G_SPAWN_ERROR, G_SPAWN_ERROR_NOENT,
-                   _("The pcmanfm executable was not found on PATH"));
+                   _("The configured file-manager executable '%s' was not found"),
+                   configured_command);
       result = FALSE;
     }
   else
     {
-      argv[0] = pcmanfm;
+      argv[0] = file_manager;
       argv[1] = (gchar *) uri;
       argv[2] = NULL;
       result = g_spawn_async (NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
@@ -2831,11 +2846,12 @@ terminal_widget_open_pcmanfm_selection_uri (GtkWindow *window,
   if (!result)
     {
       xfce_dialog_show_error (window, error,
-                              _("Failed to open the PCManFM selection URI '%s'"), uri);
+                              _("Failed to open the file-manager selection URI '%s'"), uri);
       g_clear_error (&error);
     }
 
-  g_free (pcmanfm);
+  g_free (file_manager);
+  g_free (configured_command);
   return result;
 }
 
