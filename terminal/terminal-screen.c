@@ -2373,8 +2373,7 @@ terminal_screen_set_window_geometry_hints (TerminalScreen *screen,
   gtk_window_set_geometry_hints (window,
                                  NULL,
                                  &screen->hints,
-                                 GDK_HINT_RESIZE_INC
-                                   | GDK_HINT_MIN_SIZE
+                                 GDK_HINT_MIN_SIZE
                                    | GDK_HINT_BASE_SIZE);
 }
 
