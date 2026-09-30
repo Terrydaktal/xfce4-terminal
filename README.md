@@ -47,6 +47,14 @@ VTE does not retain the process that originally emitted screen content, so the
 foreground-process allowlist is evaluated at click time rather than against
 the historical producer of a line.
 
+Double-clicking an OSC 8 hyperlink or an automatically detected link selects its
+whole displayed span, including spaces, parentheses, Unicode text, and wrapping
+across visible rows. Selection follows the label's boundaries rather than the
+target URI's punctuation, so `/trash/(agy)name+archive` is not split after `(agy)`.
+Quoted paths detected by the regex retain their enclosing quotes in the selection.
+Normal word-separator settings are left unchanged. Boundary checks run only on
+double-click; they do not add filesystem checks or output/hover processing.
+
 ### Mouse Selection With tmux
 
 General > Clipboard has a "Prefer text selection when applications capture the

@@ -253,6 +253,9 @@ struct _TerminalWidget
   pcre2_code_8 *regex_pcre[G_N_ELEMENTS (regex_patterns)];
   TerminalUnearthSearch *unearth_search;
   TerminalMouseSelection mouse_selection;
+  gboolean link_selection_drag_pending;
+  gdouble link_selection_click_x;
+  gdouble link_selection_click_y;
 };
 
 
@@ -1097,6 +1100,139 @@ terminal_widget_shell_quote_input (const gchar *text)
     }
 
   return g_shell_quote (text);
+}
+
+
+
+static gboolean
+terminal_widget_link_matches_event (VteTerminal *terminal,
+                                    GdkEvent *event,
+                                    const gchar *link,
+                                    gint tag,
+                                    gboolean osc8)
+{
+  gint candidate_tag = -1;
+  gchar *candidate = vte_terminal_hyperlink_check_event (terminal, event);
+  gboolean matches;
+
+  if (!osc8 && candidate == NULL)
+    candidate = vte_terminal_match_check_event (terminal, event, &candidate_tag);
+  matches = (osc8 || candidate_tag == tag) && g_strcmp0 (candidate, link) == 0;
+  g_free (candidate);
+  return matches;
+}
+
+
+
+static void
+terminal_widget_select_link (TerminalWidget *widget,
+                              GdkEventButton *event)
+{
+  VteTerminal *terminal = VTE_TERMINAL (widget);
+  GtkWidget *gtk_widget = GTK_WIDGET (widget);
+  GtkWidgetClass *parent = GTK_WIDGET_CLASS (terminal_widget_parent_class);
+  GtkBorder padding;
+  GdkEvent *probe, *motion;
+  gchar *link;
+  gboolean osc8;
+  gint tag = -1, threshold;
+  glong columns, cell_width, cell_height, height, row_offset;
+  gint64 clicked, first, last, cells;
+  gdouble scroll, first_x, first_y, last_x, last_y;
+
+  if (event->type != GDK_2BUTTON_PRESS || event->button != 1
+      || widget->mouse_selection == TERMINAL_MOUSE_SELECTION_APPLICATION
+      || (event->state & gtk_accelerator_get_default_mod_mask ()) != 0)
+    return;
+
+  /* Use the displayed span, not word separators or the decoded target URI.
+   * OSC 8 labels may contain spaces and have no resemblance to their target. */
+  link = vte_terminal_hyperlink_check_event (terminal, (GdkEvent *) event);
+  osc8 = link != NULL;
+  if (!osc8)
+    link = vte_terminal_match_check_event (terminal, (GdkEvent *) event, &tag);
+  if (link == NULL)
+    return;
+
+  gtk_style_context_get_padding (gtk_widget_get_style_context (gtk_widget), GTK_STATE_FLAG_NORMAL, &padding);
+  columns = vte_terminal_get_column_count (terminal);
+  cell_width = vte_terminal_get_char_width (terminal);
+  cell_height = vte_terminal_get_char_height (terminal);
+  height = gtk_widget_get_allocated_height (gtk_widget) - padding.top - padding.bottom;
+  if (columns <= 0 || cell_width <= 0 || cell_height <= 0 || height <= 0
+      || event->x < padding.left || event->x >= padding.left + columns * cell_width
+      || event->y < padding.top || event->y >= padding.top + height)
+    {
+      g_free (link);
+      return;
+    }
+
+  scroll = gtk_adjustment_get_value (gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (widget)));
+#if VTE_CHECK_VERSION(0, 66, 0)
+  if (!vte_terminal_get_scroll_unit_is_pixels (terminal))
+#endif
+    scroll *= cell_height;
+  row_offset = (gint64) (MAX (scroll, 0) + 0.5) % cell_height;
+  clicked = (gint64) ((event->y - padding.top + row_offset) / cell_height) * columns
+            + (gint64) ((event->x - padding.left) / cell_width);
+  cells = ((height + row_offset + cell_height - 1) / cell_height) * columns;
+  first = last = clicked;
+  probe = gdk_event_copy ((GdkEvent *) event);
+
+  /* Only inspect neighbouring cells on a double click. No scrollback copying,
+   * filesystem lookups, or new work in the output/hover hot paths. */
+  for (gint direction = -1; direction <= 1; direction += 2)
+    for (gint64 cell = clicked + direction; cell >= 0 && cell < cells; cell += direction)
+      {
+        probe->button.x = padding.left + (cell % columns + 0.5) * cell_width;
+        probe->button.y = CLAMP (padding.top + (cell / columns + 0.5) * cell_height - row_offset,
+                                padding.top, padding.top + height - 1);
+        if (!terminal_widget_link_matches_event (terminal, probe, link, tag, osc8))
+          break;
+        if (direction < 0)
+          first = cell;
+        else
+          last = cell;
+      }
+
+  first_x = padding.left + (first % columns + 0.1) * cell_width;
+  last_x = padding.left + (last % columns + 0.9) * cell_width;
+  first_y = CLAMP (padding.top + (first / columns + 0.5) * cell_height - row_offset,
+                   padding.top, padding.top + height - 1);
+  last_y = CLAMP (padding.top + (last / columns + 0.5) * cell_height - row_offset,
+                  padding.top, padding.top + height - 1);
+
+  /* VTE's GTK3 API has no range-selection setter. Drive its own character
+   * selection, with Shift forcing local handling even under mouse tracking.
+   * The real button release completes the gesture and publishes PRIMARY. */
+  vte_terminal_unselect_all (terminal);
+  probe->button.type = GDK_BUTTON_PRESS;
+  probe->button.state = GDK_SHIFT_MASK;
+  probe->button.x = first_x;
+  probe->button.y = first_y;
+  parent->button_press_event (gtk_widget, &probe->button);
+
+  motion = gdk_event_new (GDK_MOTION_NOTIFY);
+  motion->motion.window = g_object_ref (event->window);
+  motion->motion.time = event->time;
+  motion->motion.state = GDK_SHIFT_MASK | GDK_BUTTON1_MASK;
+  gdk_event_set_device (motion, gdk_event_get_device ((GdkEvent *) event));
+  g_object_get (gtk_widget_get_settings (gtk_widget), "gtk-dnd-drag-threshold", &threshold, NULL);
+  /* Cross the threshold even for a one-character label, then select its end. */
+  motion->motion.x = first_x + threshold + cell_width;
+  motion->motion.y = first_y;
+  parent->motion_notify_event (gtk_widget, &motion->motion);
+  motion->motion.x = last_x;
+  motion->motion.y = last_y;
+  parent->motion_notify_event (gtk_widget, &motion->motion);
+
+  widget->mouse_selection = TERMINAL_MOUSE_SELECTION_LOCAL;
+  widget->link_selection_drag_pending = TRUE;
+  widget->link_selection_click_x = event->x;
+  widget->link_selection_click_y = event->y;
+  gdk_event_free (motion);
+  gdk_event_free (probe);
+  g_free (link);
 }
 
 
@@ -2282,6 +2418,9 @@ terminal_widget_button_release_event (GtkWidget *widget,
   GdkEvent *forwarded;
   gboolean handled;
 
+  if (event->button == 1)
+    terminal_widget->link_selection_drag_pending = FALSE;
+
   if (event->button != 1 || terminal_widget->mouse_selection == TERMINAL_MOUSE_SELECTION_DEFAULT)
     return GTK_WIDGET_CLASS (terminal_widget_parent_class)->button_release_event (widget, event);
 
@@ -2303,6 +2442,15 @@ terminal_widget_motion_notify_event (GtkWidget *widget,
   GdkEvent *forwarded;
   gboolean handled;
 
+  if ((event->state & GDK_BUTTON1_MASK) && terminal_widget->link_selection_drag_pending)
+    {
+      if (!gtk_drag_check_threshold (widget,
+                                     terminal_widget->link_selection_click_x,
+                                     terminal_widget->link_selection_click_y,
+                                     event->x, event->y))
+        return TRUE;
+      terminal_widget->link_selection_drag_pending = FALSE;
+    }
 
   if (!(event->state & GDK_BUTTON1_MASK)
       || terminal_widget->mouse_selection == TERMINAL_MOUSE_SELECTION_DEFAULT)
@@ -2340,6 +2488,7 @@ terminal_widget_button_press_event (GtkWidget *widget,
   if (event->type == GDK_BUTTON_PRESS && event->button == 1)
     {
       terminal_widget->mouse_selection = TERMINAL_MOUSE_SELECTION_DEFAULT;
+      terminal_widget->link_selection_drag_pending = FALSE;
     }
 
   if (event->type == GDK_BUTTON_PRESS)
@@ -2438,6 +2587,8 @@ terminal_widget_button_press_event (GtkWidget *widget,
     }
   g_clear_pointer (&forwarded, gdk_event_free);
 
+  if (handled)
+    terminal_widget_select_link (terminal_widget, event);
 
   if (event->button == 2 && event->type == GDK_BUTTON_PRESS)
     {
