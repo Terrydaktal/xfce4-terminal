@@ -23,6 +23,10 @@
 #ifdef HAVE_STRING_H
 #include <string.h>
 #endif
+#include <stdlib.h>
+#ifdef HAVE_UNISTD_H
+#include <unistd.h>
+#endif
 #ifdef HAVE_LIBUTEMPTER
 #include <utempter.h>
 #endif
@@ -564,6 +568,180 @@ terminal_widget_commit (TerminalWidget *widget,
 
 
 static gboolean
+terminal_widget_process_looks_like_codex (pid_t pid)
+{
+  gchar *path = NULL;
+  gchar *content = NULL;
+  gsize length = 0;
+  gboolean matches = FALSE;
+
+  path = g_strdup_printf ("/proc/%d/cmdline", (gint) pid);
+  if (g_file_get_contents (path, &content, &length, NULL) && length > 0)
+    {
+      for (gsize offset = 0; offset < length;)
+        {
+          const gchar *arg = content + offset;
+          gsize arg_len = strnlen (arg, length - offset);
+
+          if (arg_len == 0)
+            {
+              offset++;
+              continue;
+            }
+
+          if (g_strcmp0 (arg, "codex") == 0
+              || g_str_has_prefix (arg, "codex-")
+              || g_strcmp0 (arg, "gemini") == 0
+              || g_str_has_prefix (arg, "gemini-")
+              || g_strcmp0 (arg, "agy") == 0
+              || g_str_has_prefix (arg, "agy-"))
+            {
+              matches = TRUE;
+              break;
+            }
+
+          {
+            gchar *basename = g_path_get_basename (arg);
+            matches = g_strcmp0 (basename, "codex") == 0
+                      || g_str_has_prefix (basename, "codex-")
+                      || g_strcmp0 (basename, "gemini") == 0
+                      || g_str_has_prefix (basename, "gemini-")
+                      || g_strcmp0 (basename, "agy") == 0
+                      || g_str_has_prefix (basename, "agy-");
+            g_free (basename);
+            if (matches)
+              break;
+          }
+
+          offset += arg_len + 1;
+        }
+    }
+  g_clear_pointer (&content, g_free);
+  g_clear_pointer (&path, g_free);
+  if (matches)
+    return TRUE;
+
+  path = g_strdup_printf ("/proc/%d/comm", (gint) pid);
+  if (g_file_get_contents (path, &content, &length, NULL) && length > 0)
+    {
+      g_strchomp (content);
+      matches = g_strcmp0 (content, "codex") == 0
+                || g_str_has_prefix (content, "codex-")
+                || g_strcmp0 (content, "gemini") == 0
+                || g_str_has_prefix (content, "gemini-")
+                || g_strcmp0 (content, "agy") == 0
+                || g_str_has_prefix (content, "agy-");
+    }
+
+  g_clear_pointer (&content, g_free);
+  g_clear_pointer (&path, g_free);
+  return matches;
+}
+
+
+
+typedef enum
+{
+  TERMINAL_FOREGROUND_OTHER,
+  TERMINAL_FOREGROUND_CODEX,
+  TERMINAL_FOREGROUND_TMUX
+} TerminalForegroundApplication;
+
+
+
+static TerminalForegroundApplication
+terminal_widget_process_application (pid_t pid)
+{
+  gchar *path = g_strdup_printf ("/proc/%d/exe", (gint) pid);
+  gchar *executable = g_file_read_link (path, NULL);
+  gchar *basename = executable != NULL ? g_path_get_basename (executable) : NULL;
+  gboolean is_tmux = g_strcmp0 (basename, "tmux") == 0
+                     || g_strcmp0 (basename, "tmux (deleted)") == 0;
+
+  g_free (basename);
+  g_free (executable);
+  g_free (path);
+
+  /* Check the executable first: `tmux new-session codex` is still tmux,
+   * and its active pane may later be running something other than Codex. */
+  if (is_tmux)
+    return TERMINAL_FOREGROUND_TMUX;
+  if (terminal_widget_process_looks_like_codex (pid))
+    return TERMINAL_FOREGROUND_CODEX;
+  return TERMINAL_FOREGROUND_OTHER;
+}
+
+
+
+static TerminalForegroundApplication
+terminal_widget_process_group_application (pid_t pgrp)
+{
+  GDir *proc_dir;
+  const gchar *entry;
+  TerminalForegroundApplication application = terminal_widget_process_application (pgrp);
+
+  if (application != TERMINAL_FOREGROUND_OTHER)
+    return application;
+
+  proc_dir = g_dir_open ("/proc", 0, NULL);
+  if (proc_dir == NULL)
+    return TERMINAL_FOREGROUND_OTHER;
+
+  while ((entry = g_dir_read_name (proc_dir)) != NULL)
+    {
+      gchar *end = NULL;
+      gint64 value = g_ascii_strtoll (entry, &end, 10);
+      pid_t pid;
+
+      if (entry[0] == '\0'
+          || end == NULL
+          || end[0] != '\0'
+          || value <= 0
+          || value > G_MAXINT)
+        continue;
+
+      pid = (pid_t) value;
+      if (pid == pgrp || getpgid (pid) != pgrp)
+        continue;
+
+      application = terminal_widget_process_application (pid);
+      if (application != TERMINAL_FOREGROUND_OTHER)
+        break;
+    }
+
+  g_dir_close (proc_dir);
+  return application;
+}
+
+
+
+static TerminalForegroundApplication
+terminal_widget_foreground_application (TerminalWidget *widget)
+{
+  VtePty *pty;
+  gint pty_fd;
+  pid_t pgrp;
+
+  pty = vte_terminal_get_pty (VTE_TERMINAL (widget));
+  if (!VTE_IS_PTY (pty))
+    return TERMINAL_FOREGROUND_OTHER;
+
+  pty_fd = vte_pty_get_fd (pty);
+  if (pty_fd < 0)
+    return TERMINAL_FOREGROUND_OTHER;
+
+  pgrp = tcgetpgrp (pty_fd);
+  if (pgrp <= 0)
+    return TERMINAL_FOREGROUND_OTHER;
+
+  /* Non-interactive wrapper shells can keep ownership of the foreground
+   * process group while Codex runs as another member of the same job. */
+  return terminal_widget_process_group_application (pgrp);
+}
+
+
+
+static gboolean
 terminal_widget_button_press_event (GtkWidget *widget,
                                     GdkEventButton *event)
 {
@@ -852,6 +1030,20 @@ terminal_widget_key_press_event (GtkWidget *widget,
       return TRUE;
     }
 
+  if ((event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter)
+      && ((event->state & mask) == GDK_SHIFT_MASK
+          || (event->state & mask) == GDK_CONTROL_MASK
+          || (event->state & mask) == GDK_MOD1_MASK))
+    {
+      TerminalForegroundApplication application = terminal_widget_foreground_application (TERMINAL_WIDGET (widget));
+
+      if (application == TERMINAL_FOREGROUND_CODEX)
+        {
+          /* Map modified Enter newline shortcuts to Ctrl+J (LF). */
+          vte_terminal_feed_child (VTE_TERMINAL (widget), "\n", 1);
+          return TRUE;
+        }
+    }
 
   /* determine current settings */
   g_object_get (G_OBJECT (TERMINAL_WIDGET (widget)->preferences),
