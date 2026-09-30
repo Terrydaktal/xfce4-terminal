@@ -145,6 +145,12 @@ terminal_widget_click_insert_link_from_event (TerminalWidget *widget,
 static gboolean
 terminal_widget_click_open_link_from_event (TerminalWidget *widget,
                                             GdkEventButton *event);
+static gboolean
+terminal_widget_event_is_ctrl_left_click (GdkEventButton *event);
+static gchar *
+terminal_widget_get_current_directory_path (TerminalWidget *widget);
+static gchar *
+terminal_widget_selected_existing_path_uri (TerminalWidget *widget);
 static void
 terminal_widget_hyperlink_hover_uri_changed (TerminalWidget *widget,
                                              const char *uri,
@@ -991,8 +997,171 @@ terminal_widget_click_open_link_from_event (TerminalWidget *widget,
       }
   }
 
+  if (terminal_widget_event_is_ctrl_left_click (event))
+    {
+      gchar *selected_uri = terminal_widget_selected_existing_path_uri (widget);
+
+      if (selected_uri != NULL)
+        {
+          terminal_widget_open_uri (widget, selected_uri, PATTERN_TYPE_FILE, event->time);
+          g_free (selected_uri);
+          return TRUE;
+        }
+
+
+    }
 
   return FALSE;
+}
+
+
+
+static gboolean
+terminal_widget_event_is_ctrl_left_click (GdkEventButton *event)
+{
+  const GdkModifierType mask = gtk_accelerator_get_default_mod_mask ();
+
+  return event->button == 1
+         && (event->state & mask) == GDK_CONTROL_MASK;
+}
+
+
+
+static gchar *
+terminal_widget_get_current_directory_path (TerminalWidget *widget)
+{
+  const gchar *cwd_uri;
+  gchar *cwd_path = NULL;
+  VtePty *pty;
+  gint pty_fd;
+  pid_t pgrp;
+
+  pty = vte_terminal_get_pty (VTE_TERMINAL (widget));
+  if (VTE_IS_PTY (pty))
+    {
+      pty_fd = vte_pty_get_fd (pty);
+      if (pty_fd >= 0)
+        {
+          pgrp = tcgetpgrp (pty_fd);
+          if (pgrp > 0)
+            {
+              gchar *proc_cwd = g_strdup_printf ("/proc/%d/cwd", (gint) pgrp);
+              cwd_path = g_file_read_link (proc_cwd, NULL);
+              g_free (proc_cwd);
+
+              if (cwd_path != NULL && !g_file_test (cwd_path, G_FILE_TEST_IS_DIR))
+                g_clear_pointer (&cwd_path, g_free);
+            }
+        }
+    }
+
+  if (cwd_path != NULL)
+    return cwd_path;
+
+  /* VTE's reported URI is useful during shell startup, but must not override
+   * a valid foreground process CWD with stale shell metadata. */
+  cwd_uri = vte_terminal_get_current_directory_uri (VTE_TERMINAL (widget));
+  if (cwd_uri != NULL)
+    {
+      cwd_path = g_filename_from_uri (cwd_uri, NULL, NULL);
+      if (cwd_path != NULL && g_file_test (cwd_path, G_FILE_TEST_IS_DIR))
+        return cwd_path;
+      g_clear_pointer (&cwd_path, g_free);
+    }
+
+  /* Relative path resolution must fail closed when the PTY no longer has a
+   * trustworthy foreground working directory. */
+  return NULL;
+}
+
+
+
+static gchar *
+terminal_widget_selected_existing_path_uri (TerminalWidget *widget)
+{
+  gchar *selection = NULL;
+  gchar *candidate = NULL;
+  gchar *path = NULL;
+  gchar *uri = NULL;
+  gsize len;
+
+  if (!vte_terminal_get_has_selection (VTE_TERMINAL (widget)))
+    return NULL;
+
+  selection = vte_terminal_get_text_selected (VTE_TERMINAL (widget), VTE_FORMAT_TEXT);
+  if (selection == NULL)
+    return NULL;
+
+  candidate = g_strstrip (selection);
+  if (*candidate == '\0' || strchr (candidate, '\n') != NULL || strchr (candidate, '\r') != NULL)
+    goto out;
+
+  len = strlen (candidate);
+  if (len > 4096)
+    goto out;
+  while (len >= 2
+         && ((candidate[0] == '"' && candidate[len - 1] == '"')
+             || (candidate[0] == '\'' && candidate[len - 1] == '\'')
+             || (candidate[0] == '<' && candidate[len - 1] == '>')
+             || (candidate[0] == '(' && candidate[len - 1] == ')')))
+    {
+      candidate[len - 1] = '\0';
+      candidate++;
+      len -= 2;
+    }
+
+  if (*candidate == '\0')
+    goto out;
+
+  if (g_str_has_prefix (candidate, "file://"))
+    {
+      gchar *filename = NULL;
+      gchar *hostname = NULL;
+
+      filename = g_filename_from_uri (candidate, &hostname, NULL);
+      if (filename != NULL
+          && terminal_widget_link_clickable (candidate, PATTERN_TYPE_FILE)
+          && g_file_test (filename, G_FILE_TEST_EXISTS))
+        uri = g_filename_to_uri (filename, NULL, NULL);
+
+      g_free (filename);
+      g_free (hostname);
+      goto out;
+    }
+
+  if (g_strcmp0 (candidate, "~") == 0)
+    {
+      path = g_strdup (g_get_home_dir ());
+    }
+  else if (g_str_has_prefix (candidate, "~/"))
+    {
+      path = g_build_filename (g_get_home_dir (), candidate + 2, NULL);
+    }
+  else if (g_path_is_absolute (candidate))
+    {
+      path = g_strdup (candidate);
+    }
+  else
+    {
+      gchar *cwd_path = NULL;
+
+      cwd_path = terminal_widget_get_current_directory_path (widget);
+      if (cwd_path != NULL)
+        path = g_build_filename (cwd_path, candidate, NULL);
+
+      g_free (cwd_path);
+    }
+
+  if (path != NULL)
+    {
+      if (g_file_test (path, G_FILE_TEST_EXISTS))
+        uri = g_filename_to_uri (path, NULL, NULL);
+    }
+
+out:
+  g_free (path);
+  g_free (selection);
+  return uri;
 }
 
 
