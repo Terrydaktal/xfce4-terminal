@@ -417,33 +417,40 @@ terminal_widget_context_menu_copy (TerminalWidget *widget,
 {
   GtkClipboard *clipboard;
   const gchar *wlink;
+  PatternType *type;
   GdkDisplay *display;
-  gchar *modified_wlink = NULL;
+  gchar *clipboard_text = NULL;
 
   wlink = g_object_get_data (G_OBJECT (item), "terminal-widget-link");
+  type = g_object_get_data (G_OBJECT (item), "terminal-widget-link-type");
   if (G_LIKELY (wlink != NULL))
     {
       display = gtk_widget_get_display (GTK_WIDGET (widget));
 
-      /* strip mailto from links, bug #7909 */
-      if (g_str_has_prefix (wlink, MAILTO))
+      if (type != NULL && (*type == PATTERN_TYPE_FILE))
         {
-          modified_wlink = g_strdup (wlink + strlen (MAILTO));
-          wlink = modified_wlink;
+          clipboard_text = terminal_widget_link_to_input (wlink, *type);
         }
+      else if (g_str_has_prefix (wlink, MAILTO))
+        {
+          /* strip mailto from links, bug #7909 */
+          clipboard_text = g_strdup (wlink + strlen (MAILTO));
+        }
+      else
+        clipboard_text = g_strdup (wlink);
 
       // The order of setting the clipboard does matter, see:
       // https://gitlab.xfce.org/apps/xfce4-terminal/-/issues/367
 
       /* copy the URI to "PRIMARY" */
       clipboard = gtk_clipboard_get_for_display (display, GDK_SELECTION_PRIMARY);
-      gtk_clipboard_set_text (clipboard, wlink, -1);
+      gtk_clipboard_set_text (clipboard, clipboard_text, -1);
 
       /* copy the URI to "CLIPBOARD" */
       clipboard = gtk_clipboard_get_for_display (display, GDK_SELECTION_CLIPBOARD);
-      gtk_clipboard_set_text (clipboard, wlink, -1);
+      gtk_clipboard_set_text (clipboard, clipboard_text, -1);
 
-      g_free (modified_wlink);
+      g_free (clipboard_text);
     }
 }
 
@@ -512,7 +519,7 @@ terminal_widget_context_menu (TerminalWidget *widget,
         }
       else if (link.type == PATTERN_TYPE_FILE)
         {
-          item_copy = gtk_menu_item_new_with_label (_("Copy Link Address"));
+          item_copy = gtk_menu_item_new_with_label (_("Copy Path"));
           if (terminal_widget_link_clickable (link.uri, link.type))
             item_open = gtk_menu_item_new_with_label (_("Open Link"));
         }
@@ -524,6 +531,7 @@ terminal_widget_context_menu (TerminalWidget *widget,
 
       /* prepend the "COPY" menu item */
       g_object_set_data_full (G_OBJECT (item_copy), I_ ("terminal-widget-link"), g_strdup (link.uri), g_free);
+      g_object_set_data_full (G_OBJECT (item_copy), I_ ("terminal-widget-link-type"), g_memdup (&link.type, sizeof (link.type)), g_free);
       g_signal_connect_swapped (G_OBJECT (item_copy), "activate", G_CALLBACK (terminal_widget_context_menu_copy), widget);
       gtk_menu_shell_prepend (GTK_MENU_SHELL (menu), item_copy);
 
