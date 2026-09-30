@@ -125,6 +125,9 @@ static gboolean
 terminal_widget_is_pcmanfm_selection_uri (const gchar *uri);
 static gchar *
 terminal_widget_get_pcmanfm_selection_fallback_uri (const gchar *uri);
+static gboolean
+terminal_widget_open_parent_selection_uri (TerminalWidget *widget,
+                                           const gchar *uri);
 static gchar *
 terminal_widget_candidate_to_path (TerminalWidget *widget,
                                    const gchar *candidate,
@@ -137,6 +140,11 @@ terminal_widget_open_path_candidate (TerminalWidget *widget,
                                      const gchar *candidate,
                                      guint32 event_time,
                                      gboolean require_allowlist);
+static gboolean
+terminal_widget_open_parent_path_candidate (TerminalWidget *widget,
+                                            const gchar *candidate,
+                                            guint32 event_time,
+                                            gboolean require_allowlist);
 static gboolean
 terminal_widget_open_pcmanfm_selection_uri (GtkWindow *window,
                                             const gchar *uri);
@@ -168,6 +176,11 @@ terminal_widget_click_open_link_from_event (TerminalWidget *widget,
                                             GdkEventButton *event);
 static gboolean
 terminal_widget_event_is_ctrl_left_click (GdkEventButton *event);
+static gboolean
+terminal_widget_event_is_ctrl_shift_left_click (GdkEventButton *event);
+static gboolean
+terminal_widget_click_open_parent_from_event (TerminalWidget *widget,
+                                              GdkEventButton *event);
 static gchar *
 terminal_widget_get_current_directory_path (TerminalWidget *widget);
 static gchar *
@@ -1261,6 +1274,97 @@ terminal_widget_click_open_link_from_event (TerminalWidget *widget,
 
 
 static gboolean
+terminal_widget_event_is_ctrl_shift_left_click (GdkEventButton *event)
+{
+  const GdkModifierType mask = gtk_accelerator_get_default_mod_mask ();
+
+  return event->button == 1
+         && (event->state & mask) == (GDK_CONTROL_MASK | GDK_SHIFT_MASK);
+}
+
+
+
+static gboolean
+terminal_widget_click_open_parent_from_event (TerminalWidget *widget,
+                                              GdkEventButton *event)
+{
+  TerminalHyperlink link = terminal_widget_get_link_with_ctrl_fallback (widget, event);
+
+  if (link.uri != NULL)
+    {
+      if (link.type == PATTERN_TYPE_PATH)
+        {
+          gboolean opened = terminal_widget_open_parent_path_candidate (widget,
+                                                                          link.uri,
+                                                                          event->time,
+                                                                          FALSE);
+          g_free (link.uri);
+          return opened;
+        }
+
+      if (link.type == PATTERN_TYPE_FILE
+          && terminal_widget_link_clickable (link.uri, link.type)
+          && terminal_widget_open_parent_path_candidate (widget, link.uri, event->time, FALSE))
+        {
+          g_free (link.uri);
+          return TRUE;
+        }
+
+      g_free (link.uri);
+    }
+
+  {
+    gchar *uri = vte_terminal_hyperlink_check_event (VTE_TERMINAL (widget), (GdkEvent *) event);
+
+    if (uri == NULL)
+      {
+        gint tag = -1;
+
+        uri = vte_terminal_match_check_event (VTE_TERMINAL (widget), (GdkEvent *) event, &tag);
+        if (terminal_widget_regex_tag_is_path (widget, tag)
+            && uri != NULL
+            && terminal_widget_open_parent_path_candidate (widget, uri, event->time, TRUE))
+          {
+            g_free (uri);
+            return TRUE;
+          }
+      }
+
+    if (uri != NULL)
+      {
+        PatternType type = g_str_has_prefix (uri, "file://") ? PATTERN_TYPE_FILE : PATTERN_TYPE_NONE;
+
+        if (type == PATTERN_TYPE_FILE
+            && terminal_widget_link_clickable (uri, type)
+            && terminal_widget_open_parent_path_candidate (widget, uri, event->time, FALSE))
+          {
+            g_free (uri);
+            return TRUE;
+          }
+
+        g_free (uri);
+      }
+  }
+
+  {
+    gchar *selection = vte_terminal_get_text_selected (VTE_TERMINAL (widget), VTE_FORMAT_TEXT);
+
+    if (selection != NULL
+        && terminal_widget_open_parent_path_candidate (widget, selection, event->time, FALSE))
+      {
+        g_free (selection);
+        return TRUE;
+      }
+
+    g_free (selection);
+  }
+
+  return FALSE;
+}
+
+
+
+static gboolean
 terminal_widget_event_is_ctrl_left_click (GdkEventButton *event)
 {
   const GdkModifierType mask = gtk_accelerator_get_default_mod_mask ();
@@ -1585,6 +1689,57 @@ out:
 
 
 static gboolean
+terminal_widget_open_parent_selection_uri (TerminalWidget *widget,
+                                           const gchar *uri)
+{
+  GtkWidget *toplevel;
+  GtkWindow *window = NULL;
+  GFile *file = NULL;
+  GFile *parent = NULL;
+  gchar *path = NULL;
+  gchar *parent_uri = NULL;
+  gchar *escaped_path = NULL;
+  gchar *selection_uri = NULL;
+  gboolean result = FALSE;
+
+  if (!g_str_has_prefix (uri, "file://")
+      || !terminal_widget_link_clickable (uri, PATTERN_TYPE_FILE))
+    return FALSE;
+
+  file = g_file_new_for_uri (uri);
+  path = g_file_get_path (file);
+  if (path == NULL || !g_file_test (path, G_FILE_TEST_EXISTS))
+    goto out;
+
+  parent = g_file_get_parent (file);
+  if (parent == NULL)
+    goto out;
+
+  parent_uri = g_file_get_uri (parent);
+  escaped_path = g_uri_escape_string (path, "/", FALSE);
+  selection_uri = g_strdup_printf (g_str_has_suffix (parent_uri, "/")
+                                     ? "%s?select=%s"
+                                     : "%s/?select=%s",
+                                   parent_uri, escaped_path);
+
+  toplevel = gtk_widget_get_toplevel (GTK_WIDGET (widget));
+  if (GTK_IS_WINDOW (toplevel))
+    window = GTK_WINDOW (toplevel);
+  result = terminal_widget_open_pcmanfm_selection_uri (window, selection_uri);
+
+out:
+  g_clear_object (&parent);
+  g_clear_object (&file);
+  g_free (selection_uri);
+  g_free (escaped_path);
+  g_free (parent_uri);
+  g_free (path);
+  return result;
+}
+
+
+
+static gboolean
 terminal_widget_open_path_candidate (TerminalWidget *widget,
                                      const gchar *candidate,
                                      guint32 event_time,
@@ -1611,6 +1766,46 @@ terminal_widget_open_path_candidate (TerminalWidget *widget,
       g_free (uri);
       g_free (path);
       return TRUE;
+    }
+
+  opened = FALSE;
+  g_free (path);
+  return opened;
+}
+
+
+
+static gboolean
+terminal_widget_open_parent_path_candidate (TerminalWidget *widget,
+                                            const gchar *candidate,
+                                            guint32 event_time,
+                                            gboolean require_allowlist)
+{
+  gchar *path;
+  gchar *uri;
+  gboolean opened;
+
+  if (g_str_has_prefix (candidate, "file://")
+      && !terminal_widget_link_clickable (candidate, PATTERN_TYPE_FILE))
+    return FALSE;
+
+  path = terminal_widget_candidate_to_path (widget, candidate, require_allowlist);
+  if (path == NULL)
+    return FALSE;
+
+  if (g_file_test (path, G_FILE_TEST_EXISTS))
+    {
+      uri = g_filename_to_uri (path, NULL, NULL);
+      if (uri == NULL)
+        {
+          g_free (path);
+          return FALSE;
+        }
+
+      opened = terminal_widget_open_parent_selection_uri (widget, uri);
+      g_free (uri);
+      g_free (path);
+      return opened;
     }
 
   opened = FALSE;
@@ -1650,6 +1845,10 @@ terminal_widget_button_press_event (GtkWidget *widget,
                     "misc-hyperlink-open-modifier", &open_modifier,
                     "misc-middle-click-opens-uri", &middle_click_opens_uri,
                     NULL);
+
+      if (terminal_widget_event_is_ctrl_shift_left_click (event)
+          && terminal_widget_click_open_parent_from_event (terminal_widget, event))
+        return TRUE;
 
       if (open_button == 0)
         {
