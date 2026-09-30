@@ -142,6 +142,10 @@ static void
 terminal_widget_hyperlink_hover_uri_changed (TerminalWidget *widget,
                                              const char *uri,
                                              const GdkRectangle *bbox G_GNUC_UNUSED);
+static gboolean
+terminal_widget_key_should_scroll_to_bottom (GdkEventKey *event);
+static void
+terminal_widget_scroll_to_bottom (TerminalWidget *widget);
 
 
 
@@ -1020,6 +1024,7 @@ terminal_widget_key_press_event (GtkWidget *widget,
                                  GdkEventKey *event)
 {
   const GdkModifierType mask = gtk_accelerator_get_default_mod_mask ();
+  gboolean scroll_on_keystroke;
   gboolean shortcuts_no_menukey;
 
   if (event->keyval == GDK_KEY_BackSpace
@@ -1044,6 +1049,12 @@ terminal_widget_key_press_event (GtkWidget *widget,
           return TRUE;
         }
     }
+
+  g_object_get (G_OBJECT (TERMINAL_WIDGET (widget)->preferences),
+                "scrolling-on-keystroke", &scroll_on_keystroke,
+                NULL);
+  if (scroll_on_keystroke && terminal_widget_key_should_scroll_to_bottom (event))
+    terminal_widget_scroll_to_bottom (TERMINAL_WIDGET (widget));
 
   /* determine current settings */
   g_object_get (G_OBJECT (TERMINAL_WIDGET (widget)->preferences),
@@ -1106,6 +1117,43 @@ terminal_widget_open_uri (TerminalWidget *widget,
     }
 
   g_free (uri);
+}
+
+
+
+static gboolean
+terminal_widget_key_should_scroll_to_bottom (GdkEventKey *event)
+{
+  switch (event->keyval)
+    {
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+    case GDK_KEY_Up:
+    case GDK_KEY_Down:
+    case GDK_KEY_Left:
+    case GDK_KEY_Right:
+    case GDK_KEY_KP_Up:
+    case GDK_KEY_KP_Down:
+    case GDK_KEY_KP_Left:
+    case GDK_KEY_KP_Right:
+      return TRUE;
+
+    default:
+      return FALSE;
+    }
+}
+
+
+
+static void
+terminal_widget_scroll_to_bottom (TerminalWidget *widget)
+{
+  GtkAdjustment *adjustment;
+  gdouble value;
+
+  adjustment = gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (widget));
+  value = MAX (0.0, gtk_adjustment_get_upper (adjustment) - gtk_adjustment_get_page_size (adjustment));
+  gtk_adjustment_set_value (adjustment, value);
 }
 
 

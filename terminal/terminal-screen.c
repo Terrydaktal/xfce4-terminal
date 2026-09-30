@@ -1446,9 +1446,10 @@ terminal_screen_update_scrolling_on_output (TerminalScreen *screen)
 static void
 terminal_screen_update_scrolling_on_keystroke (TerminalScreen *screen)
 {
-  gboolean scroll;
-  g_object_get (G_OBJECT (screen->preferences), "scrolling-on-keystroke", &scroll, NULL);
-  vte_terminal_set_scroll_on_keystroke (VTE_TERMINAL (screen->terminal), scroll);
+  /* Keep VTE's built-in auto-follow disabled so ordinary typing does not
+   * snap scrollback to the bottom. Arrow-key follow is handled explicitly
+   * in terminal-widget.c when the preference is enabled. */
+  vte_terminal_set_scroll_on_keystroke (VTE_TERMINAL (screen->terminal), FALSE);
 }
 
 
