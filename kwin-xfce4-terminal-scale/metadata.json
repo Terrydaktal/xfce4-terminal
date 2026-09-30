@@ -1,0 +1,17 @@
+{
+    "KPackageStructure": "KWin/Effect",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Terrydaktal"
+            }
+        ],
+        "Category": "Accessibility",
+        "Description": "Prototype compositor-side scaling for xfce4-terminal windows",
+        "EnabledByDefault": false,
+        "Id": "xfceterminalscale",
+        "License": "GPL",
+        "Name": "Xfce Terminal Scale"
+    },
+    "X-Plasma-API": "javascript"
+}
