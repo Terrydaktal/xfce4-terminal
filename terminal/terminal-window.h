@@ -151,6 +151,9 @@ terminal_window_new (const gchar *role,
                      TerminalVisibility borders,
                      TerminalVisibility toolbar);
 
+const gchar *
+terminal_window_get_uuid (TerminalWindow *window);
+
 void
 terminal_window_add (TerminalWindow *window,
                      TerminalScreen *screen);

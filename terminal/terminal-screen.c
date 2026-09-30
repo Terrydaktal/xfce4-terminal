@@ -232,6 +232,7 @@ struct _TerminalScreen
   GtkWidget *terminal;
   GtkWidget *scrollbar;
   GtkWidget *tab_label;
+  gchar *uuid;
 
   GdkRGBA background_color;
 
@@ -366,6 +367,7 @@ terminal_screen_init (TerminalScreen *screen)
   gboolean scrollbar;
 
   screen->loader = NULL;
+  screen->uuid = g_uuid_string_random ();
   screen->working_directory = g_get_current_dir ();
   screen->dynamic_title_mode = TERMINAL_TITLE_DEFAULT;
   screen->session_id = ++screen_last_session_id;
@@ -466,6 +468,7 @@ terminal_screen_finalize (GObject *object)
 
   g_strfreev (screen->custom_command);
   g_free (screen->working_directory);
+  g_free (screen->uuid);
   g_free (screen->custom_title);
   g_free (screen->initial_title);
   g_free (screen->custom_fg_color);
@@ -3189,6 +3192,93 @@ terminal_screen_has_foreground_process (TerminalScreen *screen)
     return FALSE;
 
   return TRUE;
+}
+
+
+
+const gchar *
+terminal_screen_get_uuid (TerminalScreen *screen)
+{
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), NULL);
+  return screen->uuid;
+}
+
+
+
+GPid
+terminal_screen_get_child_pid (TerminalScreen *screen)
+{
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), -1);
+  return screen->pid;
+}
+
+
+
+gint
+terminal_screen_get_foreground_process_group (TerminalScreen *screen)
+{
+  VtePty *pty;
+  gint fd;
+
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), -1);
+
+  pty = vte_terminal_get_pty (VTE_TERMINAL (screen->terminal));
+  if (pty == NULL)
+    return -1;
+
+  fd = vte_pty_get_fd (pty);
+  if (fd < 0)
+    return -1;
+
+  return tcgetpgrp (fd);
+}
+
+
+
+gchar *
+terminal_screen_get_pty_name (TerminalScreen *screen)
+{
+  VtePty *pty;
+  gchar *proc_fd;
+  gchar *name;
+  gint foreground_pgid;
+  gint fd;
+
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), NULL);
+
+  pty = vte_terminal_get_pty (VTE_TERMINAL (screen->terminal));
+  if (pty == NULL)
+    return NULL;
+
+  foreground_pgid = terminal_screen_get_foreground_process_group (screen);
+  if (foreground_pgid > 0)
+    {
+      proc_fd = g_strdup_printf ("/proc/%d/fd/0", foreground_pgid);
+      name = g_file_read_link (proc_fd, NULL);
+      g_free (proc_fd);
+      if (name != NULL)
+        return name;
+    }
+
+  if (screen->pid > 0)
+    {
+      proc_fd = g_strdup_printf ("/proc/%d/fd/0", (gint) screen->pid);
+      name = g_file_read_link (proc_fd, NULL);
+      g_free (proc_fd);
+      if (name != NULL)
+        return name;
+    }
+
+  /* The VTE descriptor is the PTY master and ttyname() returns /dev/ptmx. */
+  fd = vte_pty_get_fd (pty);
+  if (fd >= 0)
+    {
+      const gchar *master_name = ttyname (fd);
+      if (master_name != NULL && g_strcmp0 (master_name, "/dev/ptmx") != 0)
+        return g_strdup (master_name);
+    }
+
+  return NULL;
 }
 
 

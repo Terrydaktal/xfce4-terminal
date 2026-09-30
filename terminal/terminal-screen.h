@@ -35,6 +35,18 @@ terminal_screen_new (TerminalTabAttr *attr,
                      glong columns,
                      glong rows);
 
+const gchar *
+terminal_screen_get_uuid (TerminalScreen *screen);
+
+GPid
+terminal_screen_get_child_pid (TerminalScreen *screen);
+
+gint
+terminal_screen_get_foreground_process_group (TerminalScreen *screen);
+
+gchar *
+terminal_screen_get_pty_name (TerminalScreen *screen);
+
 void
 terminal_screen_launch_child (TerminalScreen *screen);
 

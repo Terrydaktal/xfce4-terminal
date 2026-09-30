@@ -362,6 +362,7 @@ struct _TerminalWindowPrivate
 
   TerminalScreen *active;
   TerminalScreen *last_active;
+  gchar *uuid;
 
   GQueue *closed_tabs_list;
 
@@ -1079,6 +1080,7 @@ terminal_window_init (TerminalWindow *window)
 
   window->priv->preferences = terminal_preferences_get ();
 
+  window->priv->uuid = g_uuid_string_random ();
   window->priv->font = NULL;
   window->priv->zoom = TERMINAL_ZOOM_LEVEL_DEFAULT;
   window->priv->closed_tabs_list = g_queue_new ();
@@ -1253,6 +1255,7 @@ terminal_window_finalize (GObject *object)
   g_object_unref (G_OBJECT (window->priv->encoding_action));
 
   g_slist_free (window->priv->tabs_menu_actions);
+  g_free (window->priv->uuid);
   g_free (window->priv->font);
   g_queue_free_full (window->priv->closed_tabs_list, (GDestroyNotify) terminal_tab_attr_free);
 
@@ -3343,6 +3346,15 @@ terminal_window_new (const gchar *role,
                           G_BINDING_SYNC_CREATE);
 
   return GTK_WIDGET (window);
+}
+
+
+
+const gchar *
+terminal_window_get_uuid (TerminalWindow *window)
+{
+  g_return_val_if_fail (TERMINAL_IS_WINDOW (window), NULL);
+  return window->priv->uuid;
 }
 
 
