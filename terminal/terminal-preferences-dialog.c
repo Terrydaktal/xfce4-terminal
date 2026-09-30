@@ -527,6 +527,17 @@ terminal_preferences_dialog_init (TerminalPreferencesDialog *dialog)
   gtk_grid_attach (GTK_GRID (grid), button, 1, row, 1, 1);
   gtk_widget_show (button);
 
+  row++;
+  button = gtk_check_button_new_with_mnemonic (_("Prefer text selection when applications capture the _mouse"));
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-prefer-mouse-selection",
+                          G_OBJECT (button), "active",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+  gtk_widget_set_tooltip_text (button, _("Drag normally to select terminal text, even in tmux. "
+                                         "Hold Shift to send left clicks and drags to the application. "
+                                         "Mouse wheel scrolling still goes to the application."));
+  gtk_grid_attach (GTK_GRID (grid), button, 0, row, 2, 1);
+  gtk_widget_show (button);
+
 
 
   /*

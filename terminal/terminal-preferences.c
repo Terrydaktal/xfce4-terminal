@@ -107,6 +107,7 @@ enum
   PROP_MISC_HIGHLIGHT_URLS,
   PROP_MISC_MIDDLE_CLICK_OPENS_URI,
   PROP_MISC_COPY_ON_SELECT,
+  PROP_MISC_PREFER_MOUSE_SELECTION,
   PROP_MISC_SHOW_RELAUNCH_DIALOG,
   PROP_USE_DEFAULT_WORKING_DIR,
   PROP_DEFAULT_WORKING_DIR,
@@ -1039,6 +1040,13 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
     g_param_spec_boolean ("misc-copy-on-select",
                           NULL,
                           "MiscCopyOnSelect",
+                          FALSE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  preferences_props[PROP_MISC_PREFER_MOUSE_SELECTION] =
+    g_param_spec_boolean ("misc-prefer-mouse-selection",
+                          NULL,
+                          "MiscPreferMouseSelection",
                           FALSE,
                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 

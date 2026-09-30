@@ -117,6 +117,12 @@ terminal_widget_set_property (GObject *object,
 static gboolean
 terminal_widget_button_press_event (GtkWidget *widget,
                                     GdkEventButton *event);
+static gboolean
+terminal_widget_button_release_event (GtkWidget *widget,
+                                      GdkEventButton *event);
+static gboolean
+terminal_widget_motion_notify_event (GtkWidget *widget,
+                                     GdkEventMotion *event);
 static void
 terminal_widget_drag_data_received (GtkWidget *widget,
                                     GdkDragContext *context,
@@ -229,6 +235,13 @@ terminal_widget_scroll_to_bottom (TerminalWidget *widget);
 
 
 
+typedef enum
+{
+  TERMINAL_MOUSE_SELECTION_DEFAULT,
+  TERMINAL_MOUSE_SELECTION_LOCAL,
+  TERMINAL_MOUSE_SELECTION_APPLICATION,
+} TerminalMouseSelection;
+
 struct _TerminalWidget
 {
   VteTerminal parent_instance;
@@ -239,6 +252,7 @@ struct _TerminalWidget
   gint regex_tags[G_N_ELEMENTS (regex_patterns)];
   pcre2_code_8 *regex_pcre[G_N_ELEMENTS (regex_patterns)];
   TerminalUnearthSearch *unearth_search;
+  TerminalMouseSelection mouse_selection;
 };
 
 
@@ -329,6 +343,8 @@ terminal_widget_class_init (TerminalWidgetClass *klass)
 
   gtkwidget_class = GTK_WIDGET_CLASS (klass);
   gtkwidget_class->button_press_event = terminal_widget_button_press_event;
+  gtkwidget_class->button_release_event = terminal_widget_button_release_event;
+  gtkwidget_class->motion_notify_event = terminal_widget_motion_notify_event;
   gtkwidget_class->drag_data_received = terminal_widget_drag_data_received;
   gtkwidget_class->key_press_event = terminal_widget_key_press_event;
 
@@ -2245,6 +2261,62 @@ terminal_widget_open_parent_path_candidate (TerminalWidget *widget,
 
 
 
+static guint
+terminal_widget_selection_modifiers (TerminalWidget *widget,
+                                      guint state)
+{
+  if (widget->mouse_selection == TERMINAL_MOUSE_SELECTION_LOCAL)
+    return state | GDK_SHIFT_MASK;
+  if (widget->mouse_selection == TERMINAL_MOUSE_SELECTION_APPLICATION)
+    return state & ~GDK_SHIFT_MASK;
+  return state;
+}
+
+
+
+static gboolean
+terminal_widget_button_release_event (GtkWidget *widget,
+                                      GdkEventButton *event)
+{
+  TerminalWidget *terminal_widget = TERMINAL_WIDGET (widget);
+  GdkEvent *forwarded;
+  gboolean handled;
+
+  if (event->button != 1 || terminal_widget->mouse_selection == TERMINAL_MOUSE_SELECTION_DEFAULT)
+    return GTK_WIDGET_CLASS (terminal_widget_parent_class)->button_release_event (widget, event);
+
+  forwarded = gdk_event_copy ((GdkEvent *) event);
+  forwarded->button.state = terminal_widget_selection_modifiers (terminal_widget, event->state);
+  terminal_widget->mouse_selection = TERMINAL_MOUSE_SELECTION_DEFAULT;
+  handled = GTK_WIDGET_CLASS (terminal_widget_parent_class)->button_release_event (widget, &forwarded->button);
+  gdk_event_free (forwarded);
+  return handled;
+}
+
+
+
+static gboolean
+terminal_widget_motion_notify_event (GtkWidget *widget,
+                                     GdkEventMotion *event)
+{
+  TerminalWidget *terminal_widget = TERMINAL_WIDGET (widget);
+  GdkEvent *forwarded;
+  gboolean handled;
+
+
+  if (!(event->state & GDK_BUTTON1_MASK)
+      || terminal_widget->mouse_selection == TERMINAL_MOUSE_SELECTION_DEFAULT)
+    return GTK_WIDGET_CLASS (terminal_widget_parent_class)->motion_notify_event (widget, event);
+
+  forwarded = gdk_event_copy ((GdkEvent *) event);
+  forwarded->motion.state = terminal_widget_selection_modifiers (terminal_widget, event->state);
+  handled = GTK_WIDGET_CLASS (terminal_widget_parent_class)->motion_notify_event (widget, &forwarded->motion);
+  gdk_event_free (forwarded);
+  return handled;
+}
+
+
+
 static gboolean
 terminal_widget_button_press_event (GtkWidget *widget,
                                     GdkEventButton *event)
@@ -2263,7 +2335,12 @@ terminal_widget_button_press_event (GtkWidget *widget,
   guint open_button = 0;
   guint open_modifier = 0;
   guint signal_id = 0;
+  GdkEvent *forwarded = NULL;
 
+  if (event->type == GDK_BUTTON_PRESS && event->button == 1)
+    {
+      terminal_widget->mouse_selection = TERMINAL_MOUSE_SELECTION_DEFAULT;
+    }
 
   if (event->type == GDK_BUTTON_PRESS)
     {
@@ -2319,7 +2396,32 @@ terminal_widget_button_press_event (GtkWidget *widget,
         }
     }
 
+  if (event->type == GDK_BUTTON_PRESS && event->button == 1)
+    {
+      gboolean prefer_selection;
 
+      g_object_get (G_OBJECT (terminal_widget->preferences),
+                    "misc-prefer-mouse-selection", &prefer_selection, NULL);
+      if (prefer_selection)
+        {
+          if ((event->state & modifiers) == 0)
+            {
+              terminal_widget->mouse_selection = TERMINAL_MOUSE_SELECTION_LOCAL;
+              /* Synthetic Shift must start a new selection, not extend the old one. */
+              vte_terminal_unselect_all (VTE_TERMINAL (widget));
+            }
+          else if ((event->state & modifiers) == GDK_SHIFT_MASK)
+            terminal_widget->mouse_selection = TERMINAL_MOUSE_SELECTION_APPLICATION;
+        }
+    }
+
+  /* Keep the route chosen at press time through double clicks, motion and release.
+   * Only VTE sees these modifiers; hyperlink shortcuts use the original event. */
+  if (event->button == 1 && terminal_widget->mouse_selection != TERMINAL_MOUSE_SELECTION_DEFAULT)
+    {
+      forwarded = gdk_event_copy ((GdkEvent *) event);
+      forwarded->button.state = terminal_widget_selection_modifiers (terminal_widget, event->state);
+    }
 
   if (!intercept)
     {
@@ -2330,9 +2432,11 @@ terminal_widget_button_press_event (GtkWidget *widget,
       /* don't let vte handle primary paste; we want to do it ourselves later, especially
        * to trigger the unsafe paste dialog if necessary */
       g_object_set (settings, "gtk-enable-primary-paste", FALSE, NULL);
-      handled = (*GTK_WIDGET_CLASS (terminal_widget_parent_class)->button_press_event) (widget, event);
+      handled = (*GTK_WIDGET_CLASS (terminal_widget_parent_class)->button_press_event) (widget,
+                                                                                      forwarded != NULL ? &forwarded->button : event);
       g_object_set (settings, "gtk-enable-primary-paste", primary_paste_enabled, NULL);
     }
+  g_clear_pointer (&forwarded, gdk_event_free);
 
 
   if (event->button == 2 && event->type == GDK_BUTTON_PRESS)

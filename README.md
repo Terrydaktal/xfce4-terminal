@@ -47,6 +47,19 @@ VTE does not retain the process that originally emitted screen content, so the
 foreground-process allowlist is evaluated at click time rather than against
 the historical producer of a line.
 
+### Mouse Selection With tmux
+
+General > Clipboard has a "Prefer text selection when applications capture the
+mouse" option (`misc-prefer-mouse-selection`, disabled by default). When enabled,
+ordinary left dragging makes a terminal selection that can be copied with the
+configured Copy shortcut. Keep tmux's `mouse on`: wheel events still reach tmux
+and browse its history. Shift-left dragging sends mouse input to the application
+instead. Existing hyperlink shortcuts take priority over selection handling.
+
+This selects text currently displayed by tmux; selections spanning multiple pages
+of tmux's history still require tmux copy mode. It does not change Termux's Android
+keyboard or touch handling.
+
 ### Source Code Repository
 
 [Xfce4-terminal source code](https://gitlab.xfce.org/apps/xfce4-terminal)

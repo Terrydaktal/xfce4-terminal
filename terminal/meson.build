@@ -28,13 +28,14 @@ terminal_sources = [
   'terminal-window.h',
 ]
 
-terminal_sources += gnome.genmarshal(
+terminal_marshal_sources = gnome.genmarshal(
   'terminal-marshal',
   sources: 'terminal-marshal.list',
   prefix: '_terminal_marshal',
   internal: true,
   install_header: false,
 )
+terminal_sources += terminal_marshal_sources
 
 terminal_sources += configure_file(
   configuration: configuration_data({
@@ -45,7 +46,7 @@ terminal_sources += configure_file(
   install: false,
 )
 
-terminal_sources += gnome.mkenums(
+terminal_enum_header = gnome.mkenums(
   'terminal-enum-types.h',
   install_header: false,
   sources: 'terminal-preferences.h',
@@ -54,7 +55,8 @@ terminal_sources += gnome.mkenums(
   vhead: 'GType @enum_name@_get_type (void);\n#define TERMINAL_TYPE_@ENUMSHORT@ (@enum_name@_get_type())\n',
   ftail: 'G_END_DECLS\n\n#endif /* !TERMINAL_ENUM_TYPES_H */',
 )
-terminal_sources += gnome.mkenums(
+terminal_sources += terminal_enum_header
+terminal_enum_source = gnome.mkenums(
   'terminal-enum-types.c',
   install_header: false,
   sources: 'terminal-preferences.h',
@@ -64,6 +66,7 @@ terminal_sources += gnome.mkenums(
   vprod: ' \t{ @VALUENAME@, "@VALUENAME@", "@valuenick@" },',
   vtail: ' \t{ 0, NULL, NULL }\n\t};\n\ttype = g_@type@_register_static ("@EnumName@", values);\n  }\n\treturn type;\n}\n',
 )
+terminal_sources += terminal_enum_source
 
 executable(
   'xfce4-terminal',
