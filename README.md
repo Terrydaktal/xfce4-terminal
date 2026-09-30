@@ -68,6 +68,34 @@ This selects text currently displayed by tmux; selections spanning multiple page
 of tmux's history still require tmux copy mode. It does not change Termux's Android
 keyboard or touch handling.
 
+### Modified Enter With tmux
+
+When tmux owns the terminal's foreground process group, Shift+Enter, Ctrl+Enter
+and Alt+Enter are sent as distinct CSI-u keys instead of being collapsed to Enter.
+Add this to `~/.tmux.conf`, adjusting the repository path if necessary:
+
+```tmux
+source-file "$HOME/repos/xfce4-terminal/contrib/tmux-modified-enter.conf"
+```
+
+`contrib/tmux-modified-enter.conf` maps these keys to Ctrl+J only when tmux's active
+pane command is `codex`, `gemini`, `agy`, or a hyphen-suffixed version of those
+names. Other applications receive the original key using their normal tmux key
+encoding. Ordinary Enter is not rebound. This uses tmux's own pane metadata, not
+per-key shell commands or guesses based on window titles. An interpreter reported
+only as `node` is deliberately not treated as an AI CLI.
+
+Load the fragment into an existing server, then attach from a newly opened
+patched terminal window:
+
+```sh
+tmux source-file ~/repos/xfce4-terminal/contrib/tmux-modified-enter.conf
+```
+
+Existing tmux sessions do not need restarting.
+No global extended-key or mouse options need changing. Without tmux, the existing
+direct Codex/Gemini/agy newline mapping is unchanged.
+
 ### Source Code Repository
 
 [Xfce4-terminal source code](https://gitlab.xfce.org/apps/xfce4-terminal)

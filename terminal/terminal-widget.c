@@ -3100,6 +3100,16 @@ terminal_widget_key_press_event (GtkWidget *widget,
           vte_terminal_feed_child (VTE_TERMINAL (widget), "\n", 1);
           return TRUE;
         }
+      if (application == TERMINAL_FOREGROUND_TMUX)
+        {
+          /* Preserve the modifier so tmux can choose the action for its active
+           * pane. VTE otherwise collapses Shift/Ctrl+Enter to ordinary Enter. */
+          const gchar *sequence = (event->state & mask) == GDK_SHIFT_MASK ? "\033[13;2u"
+                                  : (event->state & mask) == GDK_CONTROL_MASK ? "\033[13;5u"
+                                                                           : "\033[13;3u";
+          vte_terminal_feed_child (VTE_TERMINAL (widget), sequence, strlen (sequence));
+          return TRUE;
+        }
     }
 
   g_object_get (G_OBJECT (TERMINAL_WIDGET (widget)->preferences),
