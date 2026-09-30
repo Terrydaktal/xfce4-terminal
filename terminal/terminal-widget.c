@@ -121,6 +121,8 @@ terminal_widget_open_uri (TerminalWidget *widget,
                           guint32 event_time);
 static gboolean
 terminal_widget_is_pcmanfm_selection_uri (const gchar *uri);
+static gchar *
+terminal_widget_get_pcmanfm_selection_fallback_uri (const gchar *uri);
 static gboolean
 terminal_widget_open_pcmanfm_selection_uri (GtkWindow *window,
                                             const gchar *uri);
@@ -1548,6 +1550,7 @@ terminal_widget_open_uri (TerminalWidget *widget,
   GtkWindow *window = NULL;
   GError *error = NULL;
   gchar *uri;
+  gchar *selection_uri = NULL;
 
   toplevel = gtk_widget_get_toplevel (GTK_WIDGET (widget));
   if (GTK_IS_WINDOW (toplevel))
@@ -1583,6 +1586,11 @@ terminal_widget_open_uri (TerminalWidget *widget,
     {
       terminal_widget_open_pcmanfm_selection_uri (window, uri);
     }
+  else if (type == PATTERN_TYPE_FILE
+           && (selection_uri = terminal_widget_get_pcmanfm_selection_fallback_uri (uri)) != NULL)
+    {
+      terminal_widget_open_pcmanfm_selection_uri (window, selection_uri);
+    }
   else if (!gtk_show_uri_on_window (window, uri, event_time, &error))
     {
       /* tell the user that we were unable to open the responsible application */
@@ -1590,6 +1598,7 @@ terminal_widget_open_uri (TerminalWidget *widget,
       g_error_free (error);
     }
 
+  g_free (selection_uri);
   g_free (uri);
 }
 
@@ -1622,6 +1631,95 @@ terminal_widget_is_pcmanfm_selection_uri (const gchar *uri)
     }
 
   return FALSE;
+}
+
+
+
+static gboolean
+terminal_widget_content_type_is_binary (const gchar *content_type)
+{
+  gchar *mime_type;
+  gboolean is_binary;
+
+  if (content_type == NULL)
+    return FALSE;
+
+  /* Do not use g_content_type_is_a() here.  The MIME database can report
+   * text types such as application/json as descendants of broad executable
+   * types, which would incorrectly send them to the file manager. */
+  mime_type = g_content_type_get_mime_type (content_type);
+  is_binary = g_strcmp0 (mime_type != NULL ? mime_type : content_type,
+                         "application/x-executable") == 0
+              || g_strcmp0 (mime_type != NULL ? mime_type : content_type,
+                            "application/x-pie-executable") == 0
+              || g_strcmp0 (mime_type != NULL ? mime_type : content_type,
+                            "application/x-sharedlib") == 0
+              || g_strcmp0 (mime_type != NULL ? mime_type : content_type,
+                            "application/x-object") == 0;
+  g_free (mime_type);
+  return is_binary;
+}
+
+
+
+static gchar *
+terminal_widget_get_pcmanfm_selection_fallback_uri (const gchar *uri)
+{
+  GFile *file = NULL;
+  GFile *parent = NULL;
+  GFileInfo *info = NULL;
+  GAppInfo *handler = NULL;
+  const gchar *content_type;
+  gchar *path = NULL;
+  gchar *parent_uri = NULL;
+  gchar *escaped_path = NULL;
+  gchar *selection_uri = NULL;
+  gboolean is_binary = FALSE;
+
+  if (!g_str_has_prefix (uri, "file://"))
+    return NULL;
+
+  file = g_file_new_for_uri (uri);
+  path = g_file_get_path (file);
+  if (path == NULL)
+    goto out;
+
+  info = g_file_query_info (file,
+                            G_FILE_ATTRIBUTE_STANDARD_TYPE ","
+                            G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
+                            G_FILE_QUERY_INFO_NONE, NULL, NULL);
+  if (info == NULL)
+    goto out;
+
+  content_type = g_file_info_get_content_type (info);
+  if (g_file_info_get_file_type (info) == G_FILE_TYPE_REGULAR)
+    is_binary = terminal_widget_content_type_is_binary (content_type);
+
+  if (!is_binary)
+    handler = g_file_query_default_handler (file, NULL, NULL);
+  if (!is_binary && handler != NULL)
+    goto out;
+
+  parent = g_file_get_parent (file);
+  if (parent == NULL)
+    goto out;
+
+  parent_uri = g_file_get_uri (parent);
+  escaped_path = g_uri_escape_string (path, "/", FALSE);
+  selection_uri = g_strdup_printf (g_str_has_suffix (parent_uri, "/")
+                                     ? "%s?select=%s"
+                                     : "%s/?select=%s",
+                                   parent_uri, escaped_path);
+
+out:
+  g_clear_object (&handler);
+  g_clear_object (&info);
+  g_clear_object (&parent);
+  g_clear_object (&file);
+  g_free (escaped_path);
+  g_free (parent_uri);
+  g_free (path);
+  return selection_uri;
 }
 
 
