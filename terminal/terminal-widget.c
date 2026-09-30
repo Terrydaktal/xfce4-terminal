@@ -1878,6 +1878,62 @@ terminal_widget_unearth_search_finished (GObject *source_object,
 
 
 static gchar *
+terminal_widget_resolve_python_test_id (const gchar *path)
+{
+  gchar *directory = NULL;
+  gchar *basename = NULL;
+  gchar **components = NULL;
+  gchar *module_path = NULL;
+  guint component_count = 0;
+  gint class_index = -1;
+  GString *candidate = NULL;
+
+  if (!g_path_is_absolute (path))
+    return NULL;
+
+  directory = g_path_get_dirname (path);
+  basename = g_path_get_basename (path);
+  components = g_strsplit (basename, ".", -1);
+  component_count = g_strv_length (components);
+  if (component_count < 3
+      || !g_str_has_prefix (components[component_count - 1], "test_"))
+    goto out;
+
+  /* Resolve only the conventional module.Class.test_method shape. */
+  for (guint i = 1; i + 1 < component_count; i++)
+    {
+      if (components[i][0] != '\0' && g_ascii_isupper (components[i][0]))
+        {
+          class_index = (gint) i;
+          break;
+        }
+    }
+  if (class_index < 1)
+    goto out;
+
+  candidate = g_string_new (directory);
+  for (gint i = 0; i < class_index; i++)
+    {
+      g_string_append_c (candidate, G_DIR_SEPARATOR);
+      g_string_append (candidate, components[i]);
+    }
+  g_string_append (candidate, ".py");
+
+  if (g_file_test (candidate->str, G_FILE_TEST_IS_REGULAR))
+    module_path = g_string_free (g_steal_pointer (&candidate), FALSE);
+
+out:
+  if (candidate != NULL)
+    g_string_free (candidate, TRUE);
+  g_strfreev (components);
+  g_free (basename);
+  g_free (directory);
+  return module_path;
+}
+
+
+
+static gchar *
 terminal_widget_encode_unearth_path (const gchar *path)
 {
   const guint8 *bytes = (const guint8 *) path;
@@ -1973,6 +2029,7 @@ terminal_widget_start_unearth_search_for_path (TerminalWidget *widget,
   gchar *search_part = NULL;
   gchar *encoded_search_part = NULL;
   gchar *key = NULL;
+  gchar *python_module = NULL;
   const gchar *suffix = NULL;
   GError *error = NULL;
   gboolean started = FALSE;
@@ -1987,6 +2044,25 @@ terminal_widget_start_unearth_search_for_path (TerminalWidget *widget,
   canonical_cwd = g_canonicalize_filename (cwd, NULL);
   canonical_path = g_canonicalize_filename (path, NULL);
 
+  python_module = terminal_widget_resolve_python_test_id (canonical_path);
+  if (python_module != NULL)
+    {
+      gchar *uri = g_filename_to_uri (python_module, NULL, NULL);
+
+      if (widget->unearth_search != NULL)
+        g_cancellable_cancel (widget->unearth_search->cancellable);
+
+      if (uri != NULL)
+        {
+          if (select_parent)
+            terminal_widget_open_parent_selection_uri (widget, uri);
+          else
+            terminal_widget_open_uri (widget, uri, PATTERN_TYPE_FILE, event_time);
+          g_free (uri);
+          started = TRUE;
+        }
+      goto out;
+    }
 
   key = g_strdup_printf ("%d:%s", select_parent ? 1 : 0, canonical_path);
   if (widget->unearth_search != NULL
@@ -2077,6 +2153,7 @@ out:
   g_free (canonical_path);
   g_free (canonical_cwd);
   g_free (cwd);
+  g_free (python_module);
   g_free (key);
   if (search != NULL)
     {

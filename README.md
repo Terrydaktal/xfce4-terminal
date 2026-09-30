@@ -35,6 +35,8 @@ The fallback accepts hidden and extensionless names, uses a case-sensitive
 search, preserves non-UTF-8 filename bytes through Unearth's lossless `%XX`
 transport, and ignores stale results from a superseded click. Searches are
 bounded by a two-second Unearth timeout rather than an arbitrary result limit.
+Python test identifiers in the conventional
+`package.module.Class.test_method` form can resolve to their module file.
 
 The matching path requires an Unearth build that supports `--case-sensitive`
 and `--lossless-paths`; the forked Unearth source in `/home/lewis/Dev/fsx`
