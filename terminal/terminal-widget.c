@@ -1123,6 +1123,14 @@ terminal_widget_foreground_application (TerminalWidget *widget)
 
 
 
+gboolean
+terminal_widget_foreground_process_is_codex (TerminalWidget *widget)
+{
+  return terminal_widget_foreground_application (widget) == TERMINAL_FOREGROUND_CODEX;
+}
+
+
+
 static gboolean
 terminal_widget_process_matches_rule (const gchar *argument,
                                       const gchar *rule)

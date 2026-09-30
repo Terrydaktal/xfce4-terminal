@@ -2663,13 +2663,21 @@ void
 terminal_screen_paste_clipboard (TerminalScreen *screen)
 {
   gboolean show_dialog;
-  gchar *text = gtk_clipboard_wait_for_text (gtk_clipboard_get (GDK_SELECTION_CLIPBOARD));
+  GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
+  gchar *text = gtk_clipboard_wait_for_text (clipboard);
 
   g_return_if_fail (TERMINAL_IS_SCREEN (screen));
 
   g_object_get (G_OBJECT (screen->preferences), "misc-show-unsafe-paste-dialog", &show_dialog, NULL);
 
-  if (show_dialog
+  /* Ctrl+V is handled as a window accelerator, so a clipboard with no
+   * terminal-pasteable text otherwise produces no PTY input at all. Forward
+   * the encoded key only to foreground Codex-like agents, which can inspect
+   * richer clipboard formats through their native Wayland clipboard backend. */
+  if (text == NULL
+      && terminal_widget_foreground_process_is_codex (TERMINAL_WIDGET (screen->terminal)))
+    vte_terminal_feed_child (VTE_TERMINAL (screen->terminal), "\026", 1);
+  else if (show_dialog
       && terminal_screen_is_text_unsafe (text)
       && !disable_paste_dialog_temporarily
       && !disable_paste_dialog_until_restart)

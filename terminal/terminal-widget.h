@@ -54,6 +54,9 @@ typedef enum
 XfceGtkActionEntry *
 terminal_widget_get_action_entries (void);
 
+gboolean
+terminal_widget_foreground_process_is_codex (TerminalWidget *widget);
+
 G_END_DECLS
 
 #endif /* !TERMINAL_WIDGET_H */
