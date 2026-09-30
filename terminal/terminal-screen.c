@@ -968,6 +968,8 @@ terminal_screen_get_child_environment (TerminalScreen *screen)
           || strcmp (*p, "WINDOWID") == 0
           || strcmp (*p, "GNOME_DESKTOP_ICON") == 0
           || strcmp (*p, "COLORTERM") == 0
+          || strcmp (*p, "XDG_ACTIVATION_TOKEN") == 0
+          || strcmp (*p, "DESKTOP_STARTUP_ID") == 0
           || strcmp (*p, "DISPLAY") == 0
           || strcmp (*p, "WAYLAND_DISPLAY") == 0
           || strcmp (*p, "TERM") == 0)
