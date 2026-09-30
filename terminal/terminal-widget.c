@@ -23,6 +23,9 @@
 #ifdef HAVE_STRING_H
 #include <string.h>
 #endif
+#ifdef HAVE_ERRNO_H
+#include <errno.h>
+#endif
 #include <stdlib.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -30,6 +33,8 @@
 #ifdef HAVE_LIBUTEMPTER
 #include <utempter.h>
 #endif
+
+#include <glib/gstdio.h>
 
 #include <libxfce4ui/libxfce4ui.h>
 
@@ -44,6 +49,9 @@
 
 
 #define MAILTO "mailto:"
+
+#define IMAGE_DROP_MAX_AGE_SECONDS (60 * 60)
+#define IMAGE_DROP_CLEANUP_INTERVAL_SECONDS (15 * 60)
 
 
 
@@ -103,6 +111,8 @@ static const TerminalRegexPattern regex_patterns[] = {
   { REGEX_FILE_PATH, PATTERN_TYPE_PATH },
 };
 
+static gchar *image_drop_directory;
+
 
 
 static void
@@ -131,6 +141,10 @@ terminal_widget_drag_data_received (GtkWidget *widget,
                                     GtkSelectionData *selection_data,
                                     guint info,
                                     guint time);
+static gchar *
+terminal_widget_save_image_drop (GtkSelectionData *selection_data);
+static void
+terminal_widget_cleanup_image_drop_directory (gboolean remove_all);
 static gboolean
 terminal_widget_key_press_event (GtkWidget *widget,
                                  GdkEventKey *event);
@@ -273,6 +287,12 @@ static const GtkTargetEntry targets[] = {
   { "STRING", 0, TARGET_STRING },
   { "text/plain", 0, TARGET_TEXT_PLAIN },
   { "application/x-color", 0, TARGET_APPLICATION_X_COLOR },
+  { "image/png", 0, TARGET_IMAGE },
+  { "image/jpeg", 0, TARGET_IMAGE },
+  { "image/gif", 0, TARGET_IMAGE },
+  { "image/webp", 0, TARGET_IMAGE },
+  { "image/bmp", 0, TARGET_IMAGE },
+  { "image/tiff", 0, TARGET_IMAGE },
   { "GTK_NOTEBOOK_TAB", GTK_TARGET_SAME_APP, TARGET_GTK_NOTEBOOK_TAB },
 };
 
@@ -447,6 +467,211 @@ terminal_widget_init (TerminalWidget *widget)
       if (widget->regex_pcre[i] == NULL)
         g_warning ("Failed to compile regex, error code \"%d\".", error_number);
     }
+}
+
+
+
+static const gchar *
+terminal_widget_image_drop_extension (const gchar *mime_type)
+{
+  if (g_strcmp0 (mime_type, "image/jpeg") == 0)
+    return ".jpg";
+  else if (g_strcmp0 (mime_type, "image/gif") == 0)
+    return ".gif";
+  else if (g_strcmp0 (mime_type, "image/webp") == 0)
+    return ".webp";
+  else if (g_strcmp0 (mime_type, "image/bmp") == 0)
+    return ".bmp";
+  else if (g_strcmp0 (mime_type, "image/tiff") == 0)
+    return ".tiff";
+  else
+    return ".png";
+}
+
+
+
+static void
+terminal_widget_cleanup_image_drop_directory (gboolean remove_all)
+{
+  GDir *directory;
+  const gchar *name;
+  gint64 now;
+
+  if (image_drop_directory == NULL)
+    return;
+
+  directory = g_dir_open (image_drop_directory, 0, NULL);
+  if (directory == NULL)
+    return;
+
+  now = g_get_real_time () / G_USEC_PER_SEC;
+  while ((name = g_dir_read_name (directory)) != NULL)
+    {
+      gchar *path;
+      GStatBuf stat_buf;
+      gboolean remove_file = remove_all;
+
+      if (!g_str_has_prefix (name, "image-"))
+        continue;
+
+      path = g_build_filename (image_drop_directory, name, NULL);
+      if (!remove_file
+          && g_stat (path, &stat_buf) == 0
+          && now >= (gint64) stat_buf.st_mtime
+          && now - (gint64) stat_buf.st_mtime >= IMAGE_DROP_MAX_AGE_SECONDS)
+        remove_file = TRUE;
+
+      if (remove_file)
+        g_unlink (path);
+      g_free (path);
+    }
+
+  g_dir_close (directory);
+
+  if (remove_all)
+    {
+      g_rmdir (image_drop_directory);
+      g_clear_pointer (&image_drop_directory, g_free);
+    }
+}
+
+
+
+static gboolean
+terminal_widget_cleanup_image_drop_timer (gpointer data G_GNUC_UNUSED)
+{
+  if (image_drop_directory == NULL)
+    return G_SOURCE_REMOVE;
+
+  terminal_widget_cleanup_image_drop_directory (FALSE);
+  return G_SOURCE_CONTINUE;
+}
+
+
+
+static void
+terminal_widget_cleanup_image_drop_at_exit (void)
+{
+  terminal_widget_cleanup_image_drop_directory (TRUE);
+}
+
+
+
+static const gchar *
+terminal_widget_get_image_drop_directory (void)
+{
+  GError *error = NULL;
+
+  if (image_drop_directory != NULL)
+    return image_drop_directory;
+
+  image_drop_directory = g_dir_make_tmp ("xfce4-terminal-image-drop-XXXXXX", &error);
+  if (image_drop_directory == NULL)
+    {
+      g_warning ("Unable to create temporary directory for dropped images: %s",
+                 error != NULL ? error->message : "unknown error");
+      g_clear_error (&error);
+      return NULL;
+    }
+
+  if (g_chmod (image_drop_directory, 0700) != 0)
+    {
+      g_warning ("Unable to secure temporary directory for dropped images: %s",
+                 g_strerror (errno));
+      g_rmdir (image_drop_directory);
+      g_clear_pointer (&image_drop_directory, g_free);
+      return NULL;
+    }
+
+  atexit (terminal_widget_cleanup_image_drop_at_exit);
+  g_timeout_add_seconds (IMAGE_DROP_CLEANUP_INTERVAL_SECONDS,
+                         terminal_widget_cleanup_image_drop_timer,
+                         NULL);
+  return image_drop_directory;
+}
+
+
+
+static gchar *
+terminal_widget_save_image_drop (GtkSelectionData *selection_data)
+{
+  const gchar *directory;
+  const guchar *data;
+  gchar *mime_type;
+  gchar *template;
+  gchar *path;
+  const gchar *extension;
+  gint fd;
+  gint length;
+  gsize offset = 0;
+
+  if (gtk_selection_data_get_format (selection_data) != 8
+      || (length = gtk_selection_data_get_length (selection_data)) <= 0)
+    {
+      g_warning ("Unable to drop image: expected non-empty 8-bit image data");
+      return NULL;
+    }
+
+  directory = terminal_widget_get_image_drop_directory ();
+  if (directory == NULL)
+    return NULL;
+
+  terminal_widget_cleanup_image_drop_directory (FALSE);
+
+  mime_type = gdk_atom_name (gtk_selection_data_get_data_type (selection_data));
+  if (mime_type == NULL)
+    mime_type = g_strdup ("image/png");
+
+  template = g_build_filename (directory, "image-XXXXXX", NULL);
+  fd = g_mkstemp (template);
+  if (fd < 0)
+    {
+      g_warning ("Unable to create temporary image file: %s", g_strerror (errno));
+      g_free (mime_type);
+      g_free (template);
+      return NULL;
+    }
+
+  data = gtk_selection_data_get_data (selection_data);
+  while (offset < (gsize) length)
+    {
+      gssize written = write (fd, data + offset, (gsize) length - offset);
+      if (written <= 0)
+        {
+          g_warning ("Unable to write dropped image: %s", g_strerror (errno));
+          close (fd);
+          g_unlink (template);
+          g_free (mime_type);
+          g_free (template);
+          return NULL;
+        }
+      offset += written;
+    }
+
+  if (close (fd) != 0)
+    {
+      g_warning ("Unable to close temporary image file: %s", g_strerror (errno));
+      g_unlink (template);
+      g_free (mime_type);
+      g_free (template);
+      return NULL;
+    }
+
+  extension = terminal_widget_image_drop_extension (mime_type);
+  path = g_strconcat (template, extension, NULL);
+  if (g_rename (template, path) != 0)
+    {
+      g_warning ("Unable to finalize temporary image file: %s", g_strerror (errno));
+      g_unlink (template);
+      g_free (mime_type);
+      g_free (template);
+      g_free (path);
+      return NULL;
+    }
+
+  g_free (mime_type);
+  g_free (template);
+  return path;
 }
 
 
@@ -2664,8 +2889,11 @@ terminal_widget_drag_data_received (GtkWidget *widget,
   gchar **uris;
   gchar *filename;
   gchar *text;
+  gchar *image_path;
+  gchar *quoted_image_path;
   gint n;
   GtkWidget *screen;
+  gboolean succeed = TRUE;
 
   switch (info)
     {
@@ -2679,6 +2907,24 @@ terminal_widget_drag_data_received (GtkWidget *widget,
           if (G_LIKELY (*text != '\0'))
             vte_terminal_feed_child (VTE_TERMINAL (widget), text, strlen (text));
           g_free (text);
+        }
+      break;
+
+    case TARGET_IMAGE:
+      image_path = terminal_widget_save_image_drop (selection_data);
+      if (image_path != NULL)
+        {
+          quoted_image_path = g_shell_quote (image_path);
+          vte_terminal_feed_child (VTE_TERMINAL (widget),
+                                   quoted_image_path,
+                                   strlen (quoted_image_path));
+          vte_terminal_feed_child (VTE_TERMINAL (widget), " ", 1);
+          g_free (quoted_image_path);
+          g_free (image_path);
+        }
+      else
+        {
+          succeed = FALSE;
         }
       break;
 
@@ -2820,7 +3066,7 @@ terminal_widget_drag_data_received (GtkWidget *widget,
     }
 
   if (info != TARGET_GTK_NOTEBOOK_TAB)
-    gtk_drag_finish (context, TRUE, FALSE, time);
+    gtk_drag_finish (context, succeed, FALSE, time);
 }
 
 
