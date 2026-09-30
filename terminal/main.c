@@ -328,13 +328,10 @@ main (int argc, char **argv)
 
   app = g_object_new (TERMINAL_TYPE_APP, NULL);
 
-  if (!options.disable_server)
+  if (!terminal_gdbus_register_service (app, !options.disable_server, &error))
     {
-      if (!terminal_gdbus_register_service (app, &error))
-        {
-          g_warning ("Unable to register terminal service: %s", error->message);
-          g_clear_error (&error);
-        }
+      g_warning ("Unable to register terminal D-Bus services: %s", error->message);
+      g_clear_error (&error);
     }
 
   if (!terminal_app_process (app, nargv, nargc, &error))

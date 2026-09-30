@@ -26,6 +26,7 @@ G_BEGIN_DECLS
 
 gboolean
 terminal_gdbus_register_service (TerminalApp *app,
+                                 gboolean register_launch_service,
                                  GError **error);
 gboolean
 terminal_gdbus_invoke_launch (gint argc,

@@ -57,6 +57,37 @@ static const gchar terminal_gdbus_introspection_xml[] =
 
 
 
+typedef struct
+{
+  GDBusConnection *connection;
+  guint registration_id;
+  guint launch_owner_id;
+  guint instance_owner_id;
+  gchar *instance_name;
+} TerminalGdbusRegistration;
+
+
+
+static void
+terminal_gdbus_registration_free (gpointer user_data)
+{
+  TerminalGdbusRegistration *registration = user_data;
+
+  if (registration->launch_owner_id != 0)
+    g_bus_unown_name (registration->launch_owner_id);
+  if (registration->instance_owner_id != 0)
+    g_bus_unown_name (registration->instance_owner_id);
+  if (registration->registration_id != 0)
+    g_dbus_connection_unregister_object (registration->connection,
+                                         registration->registration_id);
+
+  g_clear_object (&registration->connection);
+  g_free (registration->instance_name);
+  g_free (registration);
+}
+
+
+
 static gchar *
 terminal_gdbus_display_name (void)
 {
@@ -416,56 +447,74 @@ static const GDBusInterfaceVTable terminal_gdbus_vtable = {
 
 
 
-static void
-terminal_gdbus_bus_acquired (GDBusConnection *connection,
-                             const gchar *name,
-                             gpointer user_data)
-{
-  guint register_id;
-  GDBusNodeInfo *info;
-  GError *error = NULL;
-
-  info = g_dbus_node_info_new_for_xml (terminal_gdbus_introspection_xml, NULL);
-  g_assert (info != NULL);
-  g_assert (*info->interfaces != NULL);
-
-  register_id = g_dbus_connection_register_object (connection,
-                                                   TERMINAL_DBUS_PATH,
-                                                   *info->interfaces, /* first iface */
-                                                   &terminal_gdbus_vtable,
-                                                   user_data,
-                                                   NULL,
-                                                   &error);
-
-  if (register_id == 0)
-    {
-      g_message ("Failed to register object: %s", error->message);
-      g_error_free (error);
-    }
-
-  g_dbus_node_info_unref (info);
-}
-
-
-
 gboolean
 terminal_gdbus_register_service (TerminalApp *app,
+                                 gboolean register_launch_service,
                                  GError **error)
 {
-  guint owner_id;
+  TerminalGdbusRegistration *registration;
+  GDBusNodeInfo *info;
+  gchar *uuid;
 
   g_return_val_if_fail (TERMINAL_IS_APP (app), FALSE);
 
-  owner_id = g_bus_own_name (G_BUS_TYPE_SESSION,
-                             TERMINAL_DBUS_SERVICE,
-                             G_BUS_NAME_OWNER_FLAGS_NONE,
-                             terminal_gdbus_bus_acquired,
-                             NULL,
-                             NULL,
-                             app,
-                             NULL);
+  registration = g_new0 (TerminalGdbusRegistration, 1);
+  registration->connection = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, error);
+  if (registration->connection == NULL)
+    goto fail;
 
-  return (owner_id != 0);
+  info = g_dbus_node_info_new_for_xml (terminal_gdbus_introspection_xml, error);
+  if (info == NULL)
+    goto fail;
+
+  registration->registration_id =
+    g_dbus_connection_register_object (registration->connection,
+                                       TERMINAL_DBUS_PATH,
+                                       *info->interfaces,
+                                       &terminal_gdbus_vtable,
+                                       app,
+                                       NULL,
+                                       error);
+  g_dbus_node_info_unref (info);
+  if (registration->registration_id == 0)
+    goto fail;
+
+  uuid = g_uuid_string_random ();
+  g_strdelimit (uuid, "-", '_');
+  registration->instance_name = g_strconcat (TERMINAL_DBUS_INSTANCE_PREFIX,
+                                             uuid, NULL);
+  g_free (uuid);
+
+  registration->instance_owner_id =
+    g_bus_own_name_on_connection (registration->connection,
+                                  registration->instance_name,
+                                  G_BUS_NAME_OWNER_FLAGS_NONE,
+                                  NULL,
+                                  NULL,
+                                  NULL,
+                                  NULL);
+
+  if (register_launch_service)
+    registration->launch_owner_id =
+      g_bus_own_name_on_connection (registration->connection,
+                                    TERMINAL_DBUS_SERVICE,
+                                    G_BUS_NAME_OWNER_FLAGS_NONE,
+                                    NULL,
+                                    NULL,
+                                    NULL,
+                                    NULL);
+
+  g_object_set_data_full (G_OBJECT (app),
+                          "terminal-gdbus-registration",
+                          registration,
+                          terminal_gdbus_registration_free);
+  g_debug ("Registered terminal control service %s", registration->instance_name);
+
+  return TRUE;
+
+fail:
+  terminal_gdbus_registration_free (registration);
+  return FALSE;
 }
 
 
