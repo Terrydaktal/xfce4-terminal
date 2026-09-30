@@ -841,7 +841,17 @@ static gboolean
 terminal_widget_key_press_event (GtkWidget *widget,
                                  GdkEventKey *event)
 {
+  const GdkModifierType mask = gtk_accelerator_get_default_mod_mask ();
   gboolean shortcuts_no_menukey;
+
+  if (event->keyval == GDK_KEY_BackSpace
+      && (event->state & mask) == GDK_CONTROL_MASK)
+    {
+      /* Match xfce4-terminal's working Alt+Backspace behavior globally. */
+      vte_terminal_feed_child (VTE_TERMINAL (widget), "\033\177", 2);
+      return TRUE;
+    }
+
 
   /* determine current settings */
   g_object_get (G_OBJECT (TERMINAL_WIDGET (widget)->preferences),
