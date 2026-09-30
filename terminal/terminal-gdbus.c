@@ -28,6 +28,8 @@
 #include "terminal-config.h"
 #include "terminal-gdbus.h"
 #include "terminal-private.h"
+#include "terminal-screen.h"
+#include "terminal-window.h"
 
 
 
@@ -39,6 +41,9 @@ static const gchar terminal_gdbus_introspection_xml[] =
         "<arg type='u' name='uid' direction='in'/>"
         "<arg type='ay' name='display-name' direction='in'/>"
         "<arg type='aay' name='argv' direction='in'/>"
+      "</method>"
+      "<method name='" TERMINAL_DBUS_METHOD_LIST_TERMINALS "'>"
+        "<arg type='aa{sv}' name='terminals' direction='out'/>"
       "</method>"
     "</interface>"
   "</node>";
@@ -63,6 +68,80 @@ terminal_gdbus_display_name (void)
     *period = '\0';
 
   return name;
+}
+
+
+
+static void
+terminal_gdbus_dict_add_string (GVariantBuilder *dict,
+                                 const gchar *key,
+                                 const gchar *value)
+{
+  g_variant_builder_add (dict, "{sv}", key, g_variant_new_string (value != NULL ? value : ""));
+}
+
+
+
+static void
+terminal_gdbus_list_terminals (TerminalApp *app,
+                               GDBusMethodInvocation *invocation)
+{
+  GVariantBuilder terminals;
+  const GSList *windows;
+
+  g_variant_builder_init (&terminals, G_VARIANT_TYPE ("aa{sv}"));
+  windows = terminal_app_get_windows (app);
+
+  for (const GSList *window_link = windows; window_link != NULL; window_link = window_link->next)
+    {
+      TerminalWindow *window = TERMINAL_WINDOW (window_link->data);
+      GtkWidget *notebook = terminal_window_get_notebook (window);
+      GList *tabs;
+
+      if (!GTK_IS_CONTAINER (notebook))
+        continue;
+
+      tabs = gtk_container_get_children (GTK_CONTAINER (notebook));
+      for (GList *tab_link = tabs; tab_link != NULL; tab_link = tab_link->next)
+        {
+          TerminalScreen *screen = TERMINAL_SCREEN (tab_link->data);
+          const gchar *working_directory;
+          const gchar *window_title;
+          GPid child_pid;
+          gint foreground_pgid;
+          gchar *pty_name;
+          GVariantBuilder terminal;
+
+          working_directory = terminal_screen_get_working_directory (screen);
+          window_title = gtk_window_get_title (GTK_WINDOW (window));
+          child_pid = terminal_screen_get_child_pid (screen);
+          foreground_pgid = terminal_screen_get_foreground_process_group (screen);
+          pty_name = terminal_screen_get_pty_name (screen);
+
+          g_variant_builder_init (&terminal, G_VARIANT_TYPE ("a{sv}"));
+          terminal_gdbus_dict_add_string (&terminal, "window_uuid", terminal_window_get_uuid (window));
+          terminal_gdbus_dict_add_string (&terminal, "tab_uuid", terminal_screen_get_uuid (screen));
+          g_variant_builder_add (&terminal, "{sv}", "active",
+                                 g_variant_new_boolean (terminal_window_get_active (window) == screen));
+          terminal_gdbus_dict_add_string (&terminal, "window_title", window_title);
+          terminal_gdbus_dict_add_string (&terminal, "working_directory", working_directory);
+          g_variant_builder_add (&terminal, "{sv}", "child_pid",
+                                 g_variant_new_uint32 (child_pid > 0 ? (guint32) child_pid : 0));
+          g_variant_builder_add (&terminal, "{sv}", "foreground_pid",
+                                 g_variant_new_uint32 (foreground_pgid > 0 ? (guint32) foreground_pgid : 0));
+          g_variant_builder_add (&terminal, "{sv}", "foreground_pgid",
+                                 g_variant_new_uint32 (foreground_pgid > 0 ? (guint32) foreground_pgid : 0));
+          terminal_gdbus_dict_add_string (&terminal, "pty", pty_name);
+          g_variant_builder_add_value (&terminals, g_variant_builder_end (&terminal));
+
+          g_free (pty_name);
+        }
+      g_list_free (tabs);
+    }
+
+  g_dbus_method_invocation_return_value (invocation,
+                                         g_variant_new ("(@aa{sv})",
+                                                        g_variant_builder_end (&terminals)));
 }
 
 
@@ -123,6 +202,10 @@ terminal_gdbus_method_call (GDBusConnection *connection,
       g_free (display_name);
       g_free (display_name2);
       g_strfreev (argv);
+    }
+  else if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_LIST_TERMINALS) == 0)
+    {
+      terminal_gdbus_list_terminals (app, invocation);
     }
   else
     {

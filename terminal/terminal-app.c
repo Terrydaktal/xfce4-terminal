@@ -298,6 +298,15 @@ terminal_app_load_accels (TerminalApp *app)
 
 
 
+const GSList *
+terminal_app_get_windows (TerminalApp *app)
+{
+  g_return_val_if_fail (TERMINAL_IS_APP (app), NULL);
+  return app->windows;
+}
+
+
+
 static gboolean
 terminal_app_unset_urgent_bell (TerminalWindow *window,
                                 GdkEvent *event,

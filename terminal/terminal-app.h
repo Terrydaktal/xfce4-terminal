@@ -57,6 +57,9 @@ terminal_app_process (TerminalApp *app,
 void
 terminal_app_load_accels (TerminalApp *app);
 
+const GSList *
+terminal_app_get_windows (TerminalApp *app);
+
 G_END_DECLS
 
 #endif /* !TERMINAL_APP_H */
