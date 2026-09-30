@@ -117,6 +117,11 @@ enum
   PROP_MISC_SHOW_UNSAFE_PASTE_DIALOG,
   PROP_MISC_RIGHT_CLICK_ACTION,
   PROP_MISC_HYPERLINKS_ENABLED,
+  PROP_MISC_HYPERLINK_INSERT_BUTTON,
+  PROP_MISC_HYPERLINK_INSERT_MODIFIER,
+  PROP_MISC_HYPERLINK_INSERT_MIDDLE_CLICK,
+  PROP_MISC_HYPERLINK_OPEN_BUTTON,
+  PROP_MISC_HYPERLINK_OPEN_MODIFIER,
   PROP_SCROLLING_BAR,
   PROP_OVERLAY_SCROLLING,
   PROP_SCROLLING_LINES,
@@ -1111,6 +1116,71 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
                           "MiscHyperlinksEnabled",
                           TRUE,
                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-insert-button:
+   *
+   * Mouse button used for hyperlink-insert action.
+   * 0 disables this trigger.
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_INSERT_BUTTON] =
+    g_param_spec_uint ("misc-hyperlink-insert-button",
+                       NULL,
+                       "MiscHyperlinkInsertButton",
+                       0u, 3u, 1u,
+                       G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-insert-modifier:
+   *
+   * GdkModifierType mask for hyperlink-insert action.
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_INSERT_MODIFIER] =
+    g_param_spec_uint ("misc-hyperlink-insert-modifier",
+                       NULL,
+                       "MiscHyperlinkInsertModifier",
+                       0u, G_MAXUINT,
+                       GDK_CONTROL_MASK | GDK_SHIFT_MASK,
+                       G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-insert-middle-click:
+   *
+   * If true, button 2 triggers hyperlink-insert regardless of modifiers.
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_INSERT_MIDDLE_CLICK] =
+    g_param_spec_boolean ("misc-hyperlink-insert-middle-click",
+                          NULL,
+                          "MiscHyperlinkInsertMiddleClick",
+                          FALSE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-open-button:
+   *
+   * If set to 0, legacy behavior is used and controlled by
+   * misc-middle-click-opens-uri.
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_OPEN_BUTTON] =
+    g_param_spec_uint ("misc-hyperlink-open-button",
+                       NULL,
+                       "MiscHyperlinkOpenButton",
+                       0u, 3u, 0u,
+                       G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-open-modifier:
+   *
+   * GdkModifierType mask for hyperlink-open action when
+   * misc-hyperlink-open-button is non-zero.
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_OPEN_MODIFIER] =
+    g_param_spec_uint ("misc-hyperlink-open-modifier",
+                       NULL,
+                       "MiscHyperlinkOpenModifier",
+                       0u, G_MAXUINT,
+                       GDK_CONTROL_MASK,
+                       G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   /**
    * TerminalPreferences:scrolling-bar:

@@ -2,6 +2,7 @@
 =====
 - build: Rename POTFILES.in to POTFILES
 - build: Make xsltproc dependency optional
+- Add configurable hyperlink click triggers for open/insert actions
 - Fix previous commit
 - Delay tab title update on contents changed to avoid high cpu usage
 - cleanup: Move function and set static qualifier
