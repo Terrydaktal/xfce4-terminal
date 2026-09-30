@@ -1,0 +1,8 @@
+# Generated local builds and compilation databases.
+/build/
+/build-*/
+/compile_commands.json
+
+# Local coding-agent state is not part of the terminal source.
+/.agents/
+/.codex
