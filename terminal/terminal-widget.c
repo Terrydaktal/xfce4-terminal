@@ -1259,7 +1259,7 @@ terminal_widget_button_press_event (GtkWidget *widget,
        * to the terminal application. In both cases we are done. Otherwise,
        * we need to paste the selection now.
        */
-      if (!handled)
+      if (!handled && vte_terminal_get_has_selection (VTE_TERMINAL (widget)))
         {
           g_signal_emit (G_OBJECT (widget), widget_signals[PASTE_SELECTION_REQUEST], 0, NULL);
         }
