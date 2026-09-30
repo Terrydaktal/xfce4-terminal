@@ -117,6 +117,7 @@ enum
   PROP_MISC_SHOW_UNSAFE_PASTE_DIALOG,
   PROP_MISC_RIGHT_CLICK_ACTION,
   PROP_MISC_HYPERLINKS_ENABLED,
+  PROP_MISC_HYPERLINK_TOOLTIPS_ENABLED,
   PROP_MISC_HYPERLINK_INSERT_BUTTON,
   PROP_MISC_HYPERLINK_INSERT_MODIFIER,
   PROP_MISC_HYPERLINK_INSERT_MIDDLE_CLICK,
@@ -1116,6 +1117,16 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
     g_param_spec_boolean ("misc-hyperlinks-enabled",
                           NULL,
                           "MiscHyperlinksEnabled",
+                          TRUE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-tooltips-enabled:
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_TOOLTIPS_ENABLED] =
+    g_param_spec_boolean ("misc-hyperlink-tooltips-enabled",
+                          NULL,
+                          "MiscHyperlinkTooltipsEnabled",
                           TRUE,
                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 

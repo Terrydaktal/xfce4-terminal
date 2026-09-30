@@ -155,6 +155,8 @@ static void
 terminal_widget_hyperlink_hover_uri_changed (TerminalWidget *widget,
                                              const char *uri,
                                              const GdkRectangle *bbox G_GNUC_UNUSED);
+static void
+terminal_widget_update_hyperlink_tooltip (TerminalWidget *widget);
 static gchar *
 terminal_widget_link_to_input (const gchar *uri,
                                PatternType type);
@@ -335,6 +337,8 @@ terminal_widget_init (TerminalWidget *widget)
   /* update tooltip when hovering over a hyperlink */
   g_signal_connect (G_OBJECT (widget), "hyperlink-hover-uri-changed",
                     G_CALLBACK (terminal_widget_hyperlink_hover_uri_changed), NULL);
+  g_signal_connect_swapped (G_OBJECT (widget->preferences), "notify::misc-hyperlink-tooltips-enabled",
+                            G_CALLBACK (terminal_widget_update_hyperlink_tooltip), widget);
 
   /* monitor the misc-hyperlinks-enabled setting */
   g_object_bind_property (G_OBJECT (widget->preferences), "misc-hyperlinks-enabled",
@@ -372,6 +376,7 @@ terminal_widget_finalize (GObject *object)
 
   /* disconnect the misc-highlight-urls watch */
   g_signal_handlers_disconnect_by_func (G_OBJECT (widget->preferences), G_CALLBACK (terminal_widget_update_highlight_urls), widget);
+  g_signal_handlers_disconnect_by_func (G_OBJECT (widget->preferences), G_CALLBACK (terminal_widget_update_hyperlink_tooltip), widget);
 
   /* disconnect from the preferences */
   g_object_unref (G_OBJECT (widget->preferences));
@@ -1908,8 +1913,27 @@ terminal_widget_hyperlink_hover_uri_changed (TerminalWidget *widget,
                                              const char *uri,
                                              const GdkRectangle *bbox G_GNUC_UNUSED)
 {
+  gboolean enabled;
+
   if (!gtk_widget_get_realized (GTK_WIDGET (widget)))
     return;
 
-  gtk_widget_set_tooltip_text (GTK_WIDGET (widget), uri);
+  g_object_get (G_OBJECT (widget->preferences),
+                "misc-hyperlink-tooltips-enabled", &enabled,
+                NULL);
+  gtk_widget_set_tooltip_text (GTK_WIDGET (widget), enabled ? uri : NULL);
+}
+
+
+
+static void
+terminal_widget_update_hyperlink_tooltip (TerminalWidget *widget)
+{
+  gboolean enabled;
+
+  g_object_get (G_OBJECT (widget->preferences),
+                "misc-hyperlink-tooltips-enabled", &enabled,
+                NULL);
+  if (!enabled)
+    gtk_widget_set_tooltip_text (GTK_WIDGET (widget), NULL);
 }
