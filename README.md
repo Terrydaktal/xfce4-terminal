@@ -29,7 +29,16 @@ This fork can detect local file paths in output when the foreground PTY
 application is listed by the `misc-auto-detect-file-path-apps` preference. The
 default allowlist covers Fish, Codex, Antigravity, Gemini, and AGY. Existing
 files open through their normal desktop handler; files that need selection are
-opened through `pcmanfm`.
+opened through `pcmanfm`. Missing paths use the optional `unearth` fallback asynchronously.
+
+The fallback accepts hidden and extensionless names, uses a case-sensitive
+search, preserves non-UTF-8 filename bytes through Unearth's lossless `%XX`
+transport, and ignores stale results from a superseded click. Searches are
+bounded by a two-second Unearth timeout rather than an arbitrary result limit.
+
+The matching path requires an Unearth build that supports `--case-sensitive`
+and `--lossless-paths`; the forked Unearth source in `/home/lewis/Dev/fsx`
+provides these options.
 
 VTE does not retain the process that originally emitted screen content, so the
 foreground-process allowlist is evaluated at click time rather than against

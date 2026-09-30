@@ -84,6 +84,16 @@ typedef struct
   PatternType type;
 } TerminalHyperlink;
 
+typedef struct
+{
+  GWeakRef widget_ref;
+  guint32 event_time;
+  gboolean select_parent;
+  GCancellable *cancellable;
+  gchar *key;
+  gchar *needle;
+} TerminalUnearthSearch;
+
 static const TerminalRegexPattern regex_patterns[] = {
   { REGEX_URL_AS_IS, PATTERN_TYPE_FULL_HTTP },
   { REGEX_URL_HTTP, PATTERN_TYPE_HTTP },
@@ -97,6 +107,8 @@ static const TerminalRegexPattern regex_patterns[] = {
 
 static void
 terminal_widget_finalize (GObject *object);
+static void
+terminal_widget_dispose (GObject *object);
 static void
 terminal_widget_set_property (GObject *object,
                               guint prop_id,
@@ -135,6 +147,11 @@ terminal_widget_candidate_to_path (TerminalWidget *widget,
 static gchar *
 terminal_widget_normalize_path_candidate (const gchar *candidate,
                                           gboolean *was_wrapped);
+static gboolean
+terminal_widget_start_unearth_search_for_path (TerminalWidget *widget,
+                                               const gchar *path,
+                                               guint32 event_time,
+                                               gboolean select_parent);
 static gboolean
 terminal_widget_open_path_candidate (TerminalWidget *widget,
                                      const gchar *candidate,
@@ -196,6 +213,11 @@ terminal_widget_foreground_process_allows_path_detection (TerminalWidget *widget
 static gchar *
 terminal_widget_link_to_input (const gchar *uri,
                                PatternType type);
+static gchar *
+terminal_widget_encode_unearth_path (const gchar *path);
+static gchar *
+terminal_widget_decode_unearth_path (const gchar *path,
+                                     gsize length);
 static gboolean
 terminal_widget_regex_tag_is_path (TerminalWidget *widget,
                                    gint tag);
@@ -215,6 +237,7 @@ struct _TerminalWidget
   GtkAccelGroup *accel_group;
   gint regex_tags[G_N_ELEMENTS (regex_patterns)];
   pcre2_code_8 *regex_pcre[G_N_ELEMENTS (regex_patterns)];
+  TerminalUnearthSearch *unearth_search;
 };
 
 
@@ -299,6 +322,7 @@ terminal_widget_class_init (TerminalWidgetClass *klass)
   GObjectClass *gobject_class;
 
   gobject_class = G_OBJECT_CLASS (klass);
+  gobject_class->dispose = terminal_widget_dispose;
   gobject_class->finalize = terminal_widget_finalize;
   gobject_class->set_property = terminal_widget_set_property;
 
@@ -403,6 +427,19 @@ terminal_widget_init (TerminalWidget *widget)
       if (widget->regex_pcre[i] == NULL)
         g_warning ("Failed to compile regex, error code \"%d\".", error_number);
     }
+}
+
+
+
+static void
+terminal_widget_dispose (GObject *object)
+{
+  TerminalWidget *widget = TERMINAL_WIDGET (object);
+
+  if (widget->unearth_search != NULL)
+    g_cancellable_cancel (widget->unearth_search->cancellable);
+
+  (*G_OBJECT_CLASS (terminal_widget_parent_class)->dispose) (object);
 }
 
 
@@ -1739,6 +1776,321 @@ out:
 
 
 
+static void
+terminal_widget_unearth_search_finished (GObject *source_object,
+                                         GAsyncResult *result,
+                                         gpointer user_data)
+{
+  TerminalUnearthSearch *search = user_data;
+  TerminalWidget *widget;
+  GBytes *stdout_bytes = NULL;
+  GBytes *stderr_bytes = NULL;
+  const guint8 *data = NULL;
+  gsize data_length = 0;
+  guint match_count = 0;
+  gchar *match_path = NULL;
+  GError *error = NULL;
+  gboolean current_search;
+
+  g_subprocess_communicate_finish (G_SUBPROCESS (source_object), result,
+                                   &stdout_bytes, &stderr_bytes, &error);
+  widget = g_weak_ref_get (&search->widget_ref);
+  current_search = widget != NULL && widget->unearth_search == search;
+
+  if (current_search
+      && !g_cancellable_is_cancelled (search->cancellable)
+      && error == NULL
+      && stdout_bytes != NULL
+      && g_subprocess_get_successful (G_SUBPROCESS (source_object)))
+    {
+      data = g_bytes_get_data (stdout_bytes, &data_length);
+      for (gsize offset = 0; offset < data_length && match_count < 2;)
+        {
+          const guint8 *newline = memchr (data + offset, '\n', data_length - offset);
+          gsize line_length = newline != NULL
+                                ? (gsize) (newline - (data + offset))
+                                : data_length - offset;
+
+          if (line_length > 0 && data[offset + line_length - 1] == '\r')
+            line_length--;
+
+          /* Unearth's textual protocol is newline-delimited, but filenames
+           * themselves may contain non-UTF-8 bytes. The lossless output mode
+           * encodes those bytes as %XX, so compare encoded records first and
+           * decode only after an exact candidate has been selected. */
+          if (line_length > 0
+              && g_strstr_len ((const gchar *) (data + offset), line_length,
+                               search->needle) != NULL)
+            {
+              gchar *encoded_match = g_strndup ((const gchar *) (data + offset), line_length);
+              gchar *match = terminal_widget_decode_unearth_path (encoded_match,
+                                                                   line_length);
+
+              if (g_path_is_absolute (match)
+                  && g_file_test (match, G_FILE_TEST_EXISTS))
+                {
+                  match_count++;
+                  if (match_count == 1)
+                    match_path = g_strdup (match);
+                }
+
+              g_free (encoded_match);
+              g_free (match);
+            }
+
+          if (newline == NULL)
+            break;
+          offset += line_length + (data[offset + line_length] == '\r' ? 2 : 1);
+        }
+
+      if (match_count == 1 && match_path != NULL)
+        {
+          gchar *uri = g_filename_to_uri (match_path, NULL, NULL);
+
+          if (uri != NULL)
+            {
+              if (search->select_parent)
+                terminal_widget_open_parent_selection_uri (widget, uri);
+              else
+                terminal_widget_open_uri (widget, uri,
+                                          PATTERN_TYPE_FILE,
+                                          search->event_time);
+              g_free (uri);
+            }
+        }
+    }
+
+  if (error != NULL)
+    g_error_free (error);
+  g_clear_pointer (&stdout_bytes, g_bytes_unref);
+  g_clear_pointer (&stderr_bytes, g_bytes_unref);
+  g_free (match_path);
+  if (current_search)
+    widget->unearth_search = NULL;
+  g_clear_object (&search->cancellable);
+  g_free (search->key);
+  g_free (search->needle);
+  g_clear_object (&widget);
+  g_weak_ref_clear (&search->widget_ref);
+  g_free (search);
+}
+
+
+
+static gchar *
+terminal_widget_encode_unearth_path (const gchar *path)
+{
+  const guint8 *bytes = (const guint8 *) path;
+  const guint8 *end = bytes + strlen (path);
+  GString *encoded = g_string_sized_new ((gsize) (end - bytes));
+
+  while (bytes < end)
+    {
+      if (*bytes == '/' || (*bytes >= 0x20 && *bytes < 0x7f && *bytes != '%'))
+        {
+          g_string_append_c (encoded, (gchar) *bytes++);
+        }
+      else if (*bytes == '%')
+        {
+          g_string_append (encoded, "%25");
+          bytes++;
+        }
+      else if (*bytes >= 0x80)
+        {
+          gunichar character;
+          gchar utf8[6];
+          gint utf8_length;
+
+          character = g_utf8_get_char_validated ((const gchar *) bytes,
+                                                 (gssize) (end - bytes));
+          if (character != (gunichar) -1 && character != (gunichar) -2)
+            {
+              utf8_length = g_unichar_to_utf8 (character, utf8);
+              g_string_append_len (encoded, utf8, utf8_length);
+              bytes += utf8_length;
+            }
+          else
+            {
+              g_string_append_printf (encoded, "%%%02X", *bytes++);
+            }
+        }
+      else
+        {
+          g_string_append_printf (encoded, "%%%02X", *bytes++);
+        }
+    }
+
+  return g_string_free (encoded, FALSE);
+}
+
+
+
+static gchar *
+terminal_widget_decode_unearth_path (const gchar *path,
+                                     gsize length)
+{
+  const guint8 *bytes = (const guint8 *) path;
+  GString *decoded = g_string_sized_new (length);
+
+  for (gsize i = 0; i < length; i++)
+    {
+      if (bytes[i] == '%' && i + 2 < length
+          && g_ascii_isxdigit (bytes[i + 1])
+          && g_ascii_isxdigit (bytes[i + 2]))
+        {
+          guint8 value = (guint8) ((g_ascii_xdigit_value (bytes[i + 1]) << 4)
+                                   | g_ascii_xdigit_value (bytes[i + 2]));
+          g_string_append_c (decoded, (gchar) value);
+          i += 2;
+        }
+      else
+        {
+          g_string_append_c (decoded, (gchar) bytes[i]);
+        }
+    }
+
+  return g_string_free (decoded, FALSE);
+}
+
+
+
+static gboolean
+terminal_widget_start_unearth_search_for_path (TerminalWidget *widget,
+                                               const gchar *path,
+                                               guint32 event_time,
+                                               gboolean select_parent)
+{
+  GSubprocessLauncher *launcher = NULL;
+  GSubprocess *subprocess = NULL;
+  TerminalUnearthSearch *search = NULL;
+  gchar *unearth = NULL;
+  gchar *cwd = NULL;
+  gchar *canonical_cwd = NULL;
+  gchar *canonical_path = NULL;
+  gchar *basename = NULL;
+  gchar *escaped = NULL;
+  gchar *pattern = NULL;
+  gchar *search_part = NULL;
+  gchar *encoded_search_part = NULL;
+  gchar *key = NULL;
+  const gchar *suffix = NULL;
+  GError *error = NULL;
+  gboolean started = FALSE;
+
+  if (path == NULL || *path == '\0')
+    return FALSE;
+
+  cwd = terminal_widget_get_current_directory_path (widget);
+  if (cwd == NULL)
+    goto out;
+
+  canonical_cwd = g_canonicalize_filename (cwd, NULL);
+  canonical_path = g_canonicalize_filename (path, NULL);
+
+
+  key = g_strdup_printf ("%d:%s", select_parent ? 1 : 0, canonical_path);
+  if (widget->unearth_search != NULL
+      && !g_cancellable_is_cancelled (widget->unearth_search->cancellable)
+      && g_strcmp0 (widget->unearth_search->key, key) == 0)
+    {
+      started = TRUE;
+      goto out;
+    }
+  if (widget->unearth_search != NULL)
+    g_cancellable_cancel (widget->unearth_search->cancellable);
+
+  if (g_str_has_prefix (canonical_path, canonical_cwd)
+      && (canonical_path[strlen (canonical_cwd)] == '\0'
+          || canonical_path[strlen (canonical_cwd)] == G_DIR_SEPARATOR))
+    {
+      suffix = canonical_path + strlen (canonical_cwd);
+      /* Match the same literal substring that the fish `f` helper searches
+       * for, rather than requiring an exact path suffix. */
+      search_part = g_strdup (suffix + (suffix[0] == G_DIR_SEPARATOR));
+    }
+  else
+    {
+      basename = g_path_get_basename (canonical_path);
+      search_part = g_strdup (basename);
+    }
+
+  encoded_search_part = terminal_widget_encode_unearth_path (search_part);
+  escaped = g_regex_escape_string (encoded_search_part, -1);
+  pattern = g_strdup (escaped);
+
+  unearth = g_find_program_in_path ("unearth");
+  if (unearth == NULL)
+    {
+      gchar *local_unearth = g_build_filename (g_get_home_dir (), ".local", "bin", "unearth", NULL);
+
+      if (g_file_test (local_unearth, G_FILE_TEST_IS_EXECUTABLE))
+        unearth = local_unearth;
+      else
+        g_free (local_unearth);
+    }
+  if (unearth == NULL)
+    goto out;
+
+  launcher = g_subprocess_launcher_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE
+                                        | G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+  subprocess = g_subprocess_launcher_spawn (launcher, &error,
+                                             unearth,
+                                             "--index-if-watched",
+                                             "--hidden",
+                                             "--full",
+                                             "--regex", pattern,
+                                             "--absolute-paths",
+                                             "--case-sensitive",
+                                             "--lossless-paths",
+                                             "--color=never",
+                                             "--timeout", "2",
+                                             cwd,
+                                             NULL);
+  if (subprocess == NULL)
+    goto out;
+
+  search = g_new0 (TerminalUnearthSearch, 1);
+  g_weak_ref_init (&search->widget_ref, widget);
+  search->event_time = event_time;
+  search->select_parent = select_parent;
+  search->cancellable = g_cancellable_new ();
+  search->key = g_steal_pointer (&key);
+  search->needle = g_strdup (encoded_search_part);
+  widget->unearth_search = search;
+  g_subprocess_communicate_async (subprocess, NULL, search->cancellable,
+                                  terminal_widget_unearth_search_finished,
+                                  search);
+  search = NULL;
+  started = TRUE;
+
+out:
+  if (error != NULL)
+    g_error_free (error);
+  g_clear_object (&subprocess);
+  g_clear_object (&launcher);
+  g_free (unearth);
+  g_free (pattern);
+  g_free (search_part);
+  g_free (encoded_search_part);
+  g_free (escaped);
+  g_free (basename);
+  g_free (canonical_path);
+  g_free (canonical_cwd);
+  g_free (cwd);
+  g_free (key);
+  if (search != NULL)
+    {
+      g_clear_object (&search->cancellable);
+      g_free (search->key);
+      g_free (search->needle);
+      g_weak_ref_clear (&search->widget_ref);
+      g_free (search);
+    }
+  return started;
+}
+
+
+
 static gboolean
 terminal_widget_open_path_candidate (TerminalWidget *widget,
                                      const gchar *candidate,
@@ -1768,7 +2120,7 @@ terminal_widget_open_path_candidate (TerminalWidget *widget,
       return TRUE;
     }
 
-  opened = FALSE;
+  opened = terminal_widget_start_unearth_search_for_path (widget, path, event_time, FALSE);
   g_free (path);
   return opened;
 }
@@ -1808,7 +2160,7 @@ terminal_widget_open_parent_path_candidate (TerminalWidget *widget,
       return opened;
     }
 
-  opened = FALSE;
+  opened = terminal_widget_start_unearth_search_for_path (widget, path, event_time, TRUE);
   g_free (path);
   return opened;
 }
@@ -2191,6 +2543,7 @@ terminal_widget_open_uri (TerminalWidget *widget,
   GtkWindow *window = NULL;
   GError *error = NULL;
   gchar *uri;
+  gchar *missing_path = NULL;
   gchar *selection_uri = NULL;
 
   toplevel = gtk_widget_get_toplevel (GTK_WIDGET (widget));
@@ -2232,6 +2585,13 @@ terminal_widget_open_uri (TerminalWidget *widget,
     {
       terminal_widget_open_pcmanfm_selection_uri (window, selection_uri);
     }
+  else if (type == PATTERN_TYPE_FILE
+           && (missing_path = g_filename_from_uri (uri, NULL, NULL)) != NULL
+           && !g_file_test (missing_path, G_FILE_TEST_EXISTS)
+           && terminal_widget_start_unearth_search_for_path (widget, missing_path, event_time, FALSE))
+    {
+      /* Unearth will reopen the resolved match from its asynchronous callback. */
+    }
   else if (!gtk_show_uri_on_window (window, uri, event_time, &error))
     {
       /* tell the user that we were unable to open the responsible application */
@@ -2239,6 +2599,7 @@ terminal_widget_open_uri (TerminalWidget *widget,
       g_error_free (error);
     }
 
+  g_free (missing_path);
   g_free (selection_uri);
   g_free (uri);
 }
