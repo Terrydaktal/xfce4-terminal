@@ -1621,6 +1621,43 @@ terminal_preferences_dialog_init (TerminalPreferencesDialog *dialog)
   /* next row */
   row++;
 
+  button = gtk_check_button_new_with_mnemonic (_("Automatically detect local _file paths"));
+  gtk_widget_set_tooltip_text (button, _("Make plain paths clickable when one of the allowed foreground applications is running. Paths already on screen are evaluated using the current foreground process."));
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-auto-detect-file-paths",
+                          G_OBJECT (button), "active",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-highlight-urls",
+                          G_OBJECT (button), "sensitive",
+                          G_BINDING_SYNC_CREATE);
+  gtk_grid_attach (GTK_GRID (grid), button, 0, row, 2, 1);
+  gtk_widget_show (button);
+
+  /* next row */
+  row++;
+
+  label = gtk_label_new_with_mnemonic (_("Path detection applications:"));
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0f);
+  gtk_widget_set_tooltip_text (label, _("Semicolon-separated process names, for example fish;codex;antigravity;gemini."));
+  gtk_grid_attach (GTK_GRID (grid), label, 0, row, 1, 1);
+  gtk_widget_show (label);
+
+  entry = gtk_entry_new ();
+  gtk_widget_set_tooltip_text (entry, _("Semicolon-separated foreground process names."));
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-auto-detect-file-path-apps",
+                          G_OBJECT (entry), "text",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-auto-detect-file-paths",
+                          G_OBJECT (entry), "sensitive",
+                          G_BINDING_SYNC_CREATE);
+  gtk_widget_set_hexpand (entry, TRUE);
+  gtk_grid_attach (GTK_GRID (grid), entry, 1, row, 1, 1);
+  terminal_gtk_label_set_a11y_relation (GTK_LABEL (label), entry);
+  gtk_label_set_mnemonic_widget (GTK_LABEL (label), entry);
+  gtk_widget_show (entry);
+
+  /* next row */
+  row++;
+
   button = gtk_check_button_new_with_mnemonic (_("_Auto-hide mouse pointer"));
   g_object_bind_property (G_OBJECT (dialog->preferences), "misc-mouse-autohide",
                           G_OBJECT (button), "active",

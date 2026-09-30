@@ -223,3 +223,4 @@ endif
 subdir('icons')
 subdir('po')
 subdir('terminal')
+subdir('tests')

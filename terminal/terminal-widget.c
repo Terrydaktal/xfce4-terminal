@@ -62,7 +62,8 @@ typedef enum
   PATTERN_TYPE_FULL_HTTP,
   PATTERN_TYPE_HTTP,
   PATTERN_TYPE_EMAIL,
-  PATTERN_TYPE_FILE
+  PATTERN_TYPE_FILE,
+  PATTERN_TYPE_PATH
 } PatternType;
 
 enum
@@ -89,6 +90,7 @@ static const TerminalRegexPattern regex_patterns[] = {
   { REGEX_URL_FILE, PATTERN_TYPE_FILE },
   { REGEX_EMAIL, PATTERN_TYPE_EMAIL },
   { REGEX_NEWS_MAN, PATTERN_TYPE_FULL_HTTP },
+  { REGEX_FILE_PATH, PATTERN_TYPE_PATH },
 };
 
 
@@ -123,6 +125,18 @@ static gboolean
 terminal_widget_is_pcmanfm_selection_uri (const gchar *uri);
 static gchar *
 terminal_widget_get_pcmanfm_selection_fallback_uri (const gchar *uri);
+static gchar *
+terminal_widget_candidate_to_path (TerminalWidget *widget,
+                                   const gchar *candidate,
+                                   gboolean require_allowlist);
+static gchar *
+terminal_widget_normalize_path_candidate (const gchar *candidate,
+                                          gboolean *was_wrapped);
+static gboolean
+terminal_widget_open_path_candidate (TerminalWidget *widget,
+                                     const gchar *candidate,
+                                     guint32 event_time,
+                                     gboolean require_allowlist);
 static gboolean
 terminal_widget_open_pcmanfm_selection_uri (GtkWindow *window,
                                             const gchar *uri);
@@ -164,9 +178,14 @@ terminal_widget_hyperlink_hover_uri_changed (TerminalWidget *widget,
                                              const GdkRectangle *bbox G_GNUC_UNUSED);
 static void
 terminal_widget_update_hyperlink_tooltip (TerminalWidget *widget);
+static gboolean
+terminal_widget_foreground_process_allows_path_detection (TerminalWidget *widget);
 static gchar *
 terminal_widget_link_to_input (const gchar *uri,
                                PatternType type);
+static gboolean
+terminal_widget_regex_tag_is_path (TerminalWidget *widget,
+                                   gint tag);
 static gboolean
 terminal_widget_key_should_scroll_to_bottom (GdkEventKey *event);
 static void
@@ -340,6 +359,8 @@ terminal_widget_init (TerminalWidget *widget)
   /* monitor the misc-highlight-urls setting */
   g_signal_connect_swapped (G_OBJECT (widget->preferences), "notify::misc-highlight-urls",
                             G_CALLBACK (terminal_widget_update_highlight_urls), widget);
+  g_signal_connect_swapped (G_OBJECT (widget->preferences), "notify::misc-auto-detect-file-paths",
+                            G_CALLBACK (terminal_widget_update_highlight_urls), widget);
 
   /* update tooltip when hovering over a hyperlink */
   g_signal_connect (G_OBJECT (widget), "hyperlink-hover-uri-changed",
@@ -362,7 +383,10 @@ terminal_widget_init (TerminalWidget *widget)
       gint error_number;
       PCRE2_SIZE error_offset;
 
-      widget->regex_pcre[i] = pcre2_compile_8 ((PCRE2_SPTR8) regex_patterns[i].pattern, PCRE2_ZERO_TERMINATED, 0, &error_number, &error_offset, NULL);
+      widget->regex_pcre[i] = pcre2_compile_8 ((PCRE2_SPTR8) regex_patterns[i].pattern,
+                                               PCRE2_ZERO_TERMINATED,
+                                               PCRE2_UTF | PCRE2_UCP,
+                                               &error_number, &error_offset, NULL);
       if (widget->regex_pcre[i] == NULL)
         g_warning ("Failed to compile regex, error code \"%d\".", error_number);
     }
@@ -445,7 +469,7 @@ terminal_widget_context_menu_copy (TerminalWidget *widget,
     {
       display = gtk_widget_get_display (GTK_WIDGET (widget));
 
-      if (type != NULL && (*type == PATTERN_TYPE_FILE))
+      if (type != NULL && (*type == PATTERN_TYPE_FILE || *type == PATTERN_TYPE_PATH))
         {
           clipboard_text = terminal_widget_link_to_input (wlink, *type);
         }
@@ -488,6 +512,9 @@ terminal_widget_context_menu_open (TerminalWidget *widget,
     {
       guint32 event_time = gtk_get_current_event_time ();
 
+      if (*type == PATTERN_TYPE_PATH)
+        terminal_widget_open_path_candidate (widget, wlink, event_time, TRUE);
+      else
         terminal_widget_open_uri (widget, wlink, *type, event_time);
     }
 }
@@ -535,7 +562,7 @@ terminal_widget_context_menu (TerminalWidget *widget,
           item_copy = gtk_menu_item_new_with_label (_("Copy Email Address"));
           item_open = gtk_menu_item_new_with_label (_("Compose Email"));
         }
-      else if (link.type == PATTERN_TYPE_FILE)
+      else if (link.type == PATTERN_TYPE_FILE || link.type == PATTERN_TYPE_PATH)
         {
           item_copy = gtk_menu_item_new_with_label (_("Copy Path"));
           if (terminal_widget_link_clickable (link.uri, link.type))
@@ -785,6 +812,176 @@ terminal_widget_foreground_application (TerminalWidget *widget)
 
 
 
+static gboolean
+terminal_widget_process_matches_rule (const gchar *argument,
+                                      const gchar *rule)
+{
+  gchar *basename;
+  gchar *prefix;
+  gboolean matches;
+
+  if (rule == NULL || *rule == '\0')
+    return FALSE;
+
+  if (g_strcmp0 (rule, "*") == 0)
+    return TRUE;
+
+  basename = g_path_get_basename (argument);
+  matches = g_strcmp0 (argument, rule) == 0 || g_strcmp0 (basename, rule) == 0;
+
+  if (!matches)
+    {
+      prefix = g_strconcat (rule, "-", NULL);
+      matches = g_str_has_prefix (basename, prefix);
+      g_free (prefix);
+    }
+
+  g_free (basename);
+  return matches;
+}
+
+
+
+static gboolean
+terminal_widget_process_matches_allowlist (pid_t pid,
+                                            const gchar *allowlist)
+{
+  gchar *path = NULL;
+  gchar *content = NULL;
+  gchar **rules = NULL;
+  gsize length = 0;
+  gboolean matches = FALSE;
+
+  if (allowlist == NULL || *allowlist == '\0')
+    return FALSE;
+
+  rules = g_strsplit_set (allowlist, ";, \t\r\n", -1);
+  path = g_strdup_printf ("/proc/%d/cmdline", (gint) pid);
+  if (g_file_get_contents (path, &content, &length, NULL) && length > 0)
+    {
+      gchar *interpreter = NULL;
+      gchar *script = NULL;
+      const gchar *first_argument = content;
+      gsize first_length = strnlen (first_argument, length);
+
+      /* Match the executable, not arbitrary command arguments. This avoids
+       * treating output such as `rg codex` as the foreground application. */
+      if (first_length > 0)
+        {
+          for (guint i = 0; rules[i] != NULL; i++)
+            {
+              if (terminal_widget_process_matches_rule (first_argument, rules[i]))
+                {
+                  matches = TRUE;
+                  break;
+                }
+            }
+        }
+
+      /* Node/Python-style launchers identify the real foreground app in the
+       * next argument, e.g. `node /bin/codex`. Only inspect that argument for
+       * known interpreters, never arbitrary arguments to native programs. */
+      interpreter = g_path_get_basename (first_argument);
+      if (!matches
+          && (g_strcmp0 (interpreter, "node") == 0
+              || g_strcmp0 (interpreter, "nodejs") == 0
+              || g_strcmp0 (interpreter, "python") == 0
+              || g_strcmp0 (interpreter, "python3") == 0
+              || g_strcmp0 (interpreter, "ruby") == 0
+              || g_strcmp0 (interpreter, "perl") == 0
+              || g_strcmp0 (interpreter, "bun") == 0
+              || g_strcmp0 (interpreter, "deno") == 0))
+        {
+          const gchar *script_start = first_argument + first_length + 1;
+          if ((gsize) (script_start - content) < length)
+            {
+              gsize script_length = strnlen (script_start,
+                                              length - (gsize) (script_start - content));
+              if (script_length > 0)
+                {
+                  script = g_strndup (script_start, script_length);
+                  for (guint i = 0; rules[i] != NULL; i++)
+                    {
+                      if (terminal_widget_process_matches_rule (script, rules[i]))
+                        {
+                          matches = TRUE;
+                          break;
+                        }
+                    }
+                }
+            }
+        }
+
+      g_free (script);
+      g_free (interpreter);
+    }
+
+  g_clear_pointer (&content, g_free);
+  g_clear_pointer (&path, g_free);
+
+  if (!matches)
+    {
+      path = g_strdup_printf ("/proc/%d/comm", (gint) pid);
+      if (g_file_get_contents (path, &content, &length, NULL) && length > 0)
+        {
+          g_strchomp (content);
+          for (guint i = 0; rules[i] != NULL; i++)
+            {
+              if (terminal_widget_process_matches_rule (content, rules[i]))
+                {
+                  matches = TRUE;
+                  break;
+                }
+            }
+        }
+    }
+
+  g_clear_pointer (&content, g_free);
+  g_clear_pointer (&path, g_free);
+  g_strfreev (rules);
+  return matches;
+}
+
+
+
+static gboolean
+terminal_widget_foreground_process_allows_path_detection (TerminalWidget *widget)
+{
+  VtePty *pty;
+  gint pty_fd;
+  pid_t pgrp;
+  gboolean enabled;
+  gchar *allowlist = NULL;
+  gboolean matches;
+
+  /* VTE stores screen text, not the PID that produced each cell. The only
+   * reliable provenance available here is the current PTY foreground group. */
+  g_object_get (G_OBJECT (widget->preferences),
+                "misc-auto-detect-file-paths", &enabled,
+                "misc-auto-detect-file-path-apps", &allowlist,
+                NULL);
+  if (!enabled)
+    {
+      g_free (allowlist);
+      return FALSE;
+    }
+
+  pty = vte_terminal_get_pty (VTE_TERMINAL (widget));
+  if (!VTE_IS_PTY (pty))
+    {
+      g_free (allowlist);
+      return FALSE;
+    }
+
+  pty_fd = vte_pty_get_fd (pty);
+  pgrp = pty_fd >= 0 ? tcgetpgrp (pty_fd) : -1;
+  matches = pgrp > 0 && terminal_widget_process_matches_allowlist (pgrp, allowlist);
+  g_free (allowlist);
+  return matches;
+}
+
+
+
 static gchar *
 terminal_widget_link_to_input (const gchar *uri,
                                PatternType type)
@@ -940,6 +1137,11 @@ terminal_widget_click_insert_link_from_event (TerminalWidget *widget,
 
         uri = vte_terminal_match_check_event (VTE_TERMINAL (widget), (GdkEvent *) event, &tag);
 
+        if (terminal_widget_regex_tag_is_path (widget, tag))
+          {
+            g_free (uri);
+            uri = NULL;
+          }
       }
 
     if (uri != NULL)
@@ -972,7 +1174,14 @@ terminal_widget_click_open_link_from_event (TerminalWidget *widget,
 
   if (G_UNLIKELY (link.uri != NULL))
     {
-      if (terminal_widget_link_clickable (link.uri, link.type))
+      if (link.type == PATTERN_TYPE_PATH)
+        {
+          gboolean opened = terminal_widget_open_path_candidate (widget, link.uri,
+                                                                   event->time, TRUE);
+          g_free (link.uri);
+          return opened;
+        }
+      else if (terminal_widget_link_clickable (link.uri, link.type))
         {
           terminal_widget_open_uri (widget, link.uri, link.type, event->time);
           g_free (link.uri);
@@ -992,6 +1201,18 @@ terminal_widget_click_open_link_from_event (TerminalWidget *widget,
 
         uri = vte_terminal_match_check_event (VTE_TERMINAL (widget), (GdkEvent *) event, &tag);
 
+        if (terminal_widget_regex_tag_is_path (widget, tag))
+          {
+            if (uri != NULL
+                && terminal_widget_open_path_candidate (widget, uri, event->time, TRUE))
+              {
+                g_free (uri);
+                return TRUE;
+              }
+
+            g_free (uri);
+            uri = NULL;
+          }
       }
 
     if (uri != NULL)
@@ -1020,7 +1241,18 @@ terminal_widget_click_open_link_from_event (TerminalWidget *widget,
           return TRUE;
         }
 
+      {
+        gchar *selection = vte_terminal_get_text_selected (VTE_TERMINAL (widget), VTE_FORMAT_TEXT);
 
+        if (selection != NULL
+            && terminal_widget_open_path_candidate (widget, selection, event->time, FALSE))
+          {
+            g_free (selection);
+            return TRUE;
+          }
+
+        g_free (selection);
+      }
     }
 
   return FALSE;
@@ -1174,6 +1406,216 @@ out:
   g_free (path);
   g_free (selection);
   return uri;
+}
+
+
+
+static gchar *
+terminal_widget_normalize_path_candidate (const gchar *candidate,
+                                          gboolean *was_wrapped)
+{
+  GString *normalized;
+  gboolean previous_was_wrap = FALSE;
+
+  normalized = g_string_sized_new (strlen (candidate));
+  *was_wrapped = FALSE;
+
+  for (const gchar *p = candidate; *p != '\0'; p++)
+    {
+      if (previous_was_wrap && (*p == ' ' || *p == '\t'))
+        continue;
+
+      if (*p == '\r' || *p == '\n')
+        {
+          if (*p == '\r')
+            {
+              if (p[1] != '\n')
+                {
+                  g_string_free (normalized, TRUE);
+                  return NULL;
+                }
+              p++;
+            }
+
+          if (normalized->len == 0
+              || normalized->str[normalized->len - 1] != '/'
+              || previous_was_wrap)
+            {
+              g_string_free (normalized, TRUE);
+              return NULL;
+            }
+
+          *was_wrapped = TRUE;
+          previous_was_wrap = TRUE;
+          continue;
+        }
+
+      if ((guchar) *p < 0x20 || *p == 0x7f)
+        {
+          g_string_free (normalized, TRUE);
+          return NULL;
+        }
+
+      g_string_append_c (normalized, *p);
+      previous_was_wrap = FALSE;
+    }
+
+  return g_string_free (normalized, FALSE);
+}
+
+
+
+static gchar *
+terminal_widget_candidate_to_path (TerminalWidget *widget,
+                                   const gchar *candidate,
+                                   gboolean require_allowlist)
+{
+  gchar *cwd_path = NULL;
+  gchar *raw_candidate = NULL;
+  gchar *result = NULL;
+  gssize end;
+  gboolean was_wrapped;
+
+  if ((require_allowlist
+       && !terminal_widget_foreground_process_allows_path_detection (widget))
+      || candidate == NULL
+      || *candidate == '\0'
+      || strlen (candidate) > 4096)
+    return NULL;
+
+  raw_candidate = terminal_widget_normalize_path_candidate (candidate, &was_wrapped);
+  if (raw_candidate == NULL)
+    return NULL;
+
+  if (g_str_has_prefix (raw_candidate, "file://"))
+    {
+      if (terminal_widget_link_clickable (raw_candidate, PATTERN_TYPE_FILE))
+        result = g_filename_from_uri (raw_candidate, NULL, NULL);
+      goto out;
+    }
+
+  cwd_path = terminal_widget_get_current_directory_path (widget);
+
+  /* A selection can contain a path followed by a command argument, for
+   * example `foo.cpp --line 20`. Keep quoted paths intact, but remove an
+   * obvious option suffix before starting an Unearth search. */
+  if (raw_candidate[0] != '"' && raw_candidate[0] != '\''
+      && raw_candidate[0] != '<' && raw_candidate[0] != '(')
+    {
+      gchar *separator = strpbrk (raw_candidate, " \t");
+
+      if (separator != NULL
+          && separator[1] == '-'
+          && !g_file_test (raw_candidate, G_FILE_TEST_EXISTS))
+        *separator = '\0';
+    }
+
+  end = (gssize) strlen (raw_candidate);
+  while (end > 0 && result == NULL)
+    {
+      gchar *piece;
+      gchar *trimmed;
+      gchar *path = NULL;
+      gsize length;
+
+      piece = g_strndup (raw_candidate, (gsize) end);
+      trimmed = g_strstrip (piece);
+      length = strlen (trimmed);
+
+      while (length >= 2
+             && ((trimmed[0] == '"' && trimmed[length - 1] == '"')
+                 || (trimmed[0] == '\'' && trimmed[length - 1] == '\'')
+                 || (trimmed[0] == '<' && trimmed[length - 1] == '>')
+                 || (trimmed[0] == '(' && trimmed[length - 1] == ')')))
+        {
+          trimmed[length - 1] = '\0';
+          trimmed++;
+          length -= 2;
+        }
+
+      while (length > 0
+             && strchr (".,;:!?]}", trimmed[length - 1]) != NULL)
+        trimmed[--length] = '\0';
+
+      if (g_strcmp0 (trimmed, "~") == 0)
+        {
+          path = g_strdup (g_get_home_dir ());
+        }
+      else if (g_str_has_prefix (trimmed, "~/"))
+        {
+          path = g_build_filename (g_get_home_dir (), trimmed + 2, NULL);
+        }
+      else if (g_path_is_absolute (trimmed))
+        {
+          path = g_strdup (trimmed);
+        }
+      else if (*trimmed != '\0' && cwd_path != NULL)
+        {
+          path = g_build_filename (cwd_path, trimmed, NULL);
+        }
+
+      if (path != NULL)
+        {
+          result = path;
+          path = NULL;
+        }
+
+      g_free (path);
+      g_free (piece);
+
+      while (result == NULL && end > 0 && g_ascii_isspace (raw_candidate[end - 1]))
+        end--;
+      while (result == NULL && end > 0 && !g_ascii_isspace (raw_candidate[end - 1]))
+        end--;
+    }
+
+out:
+  /* A hard newline after slash is indistinguishable from a visual wrap in
+   * VTE's regex input. Do not turn such text into an Unearth query. */
+  if (was_wrapped
+      && result != NULL
+      && !g_file_test (result, G_FILE_TEST_EXISTS))
+    g_clear_pointer (&result, g_free);
+
+  g_free (cwd_path);
+  g_free (raw_candidate);
+  return result;
+}
+
+
+
+static gboolean
+terminal_widget_open_path_candidate (TerminalWidget *widget,
+                                     const gchar *candidate,
+                                     guint32 event_time,
+                                     gboolean require_allowlist)
+{
+  gchar *path;
+  gchar *uri;
+  gboolean opened;
+
+  path = terminal_widget_candidate_to_path (widget, candidate, require_allowlist);
+  if (path == NULL)
+    return FALSE;
+
+  if (g_file_test (path, G_FILE_TEST_EXISTS))
+    {
+      uri = g_filename_to_uri (path, NULL, NULL);
+      if (uri == NULL)
+        {
+          g_free (path);
+          return FALSE;
+        }
+
+      terminal_widget_open_uri (widget, uri, PATTERN_TYPE_FILE, event_time);
+      g_free (uri);
+      g_free (path);
+      return TRUE;
+    }
+
+  opened = FALSE;
+  g_free (path);
+  return opened;
 }
 
 
@@ -1804,66 +2246,89 @@ terminal_widget_update_highlight_urls (TerminalWidget *widget)
 {
   guint i;
   gboolean highlight_urls;
+  gboolean auto_detect_file_paths;
   VteRegex *regex;
   const TerminalRegexPattern *pattern;
   GError *error;
 
   g_object_get (G_OBJECT (widget->preferences),
-                "misc-highlight-urls", &highlight_urls, NULL);
+                "misc-highlight-urls", &highlight_urls,
+                "misc-auto-detect-file-paths", &auto_detect_file_paths,
+                NULL);
 
-  if (!highlight_urls)
+  for (i = 0; i < G_N_ELEMENTS (regex_patterns); i++)
     {
-      /* remove all our regex tags */
-      for (i = 0; i < G_N_ELEMENTS (regex_patterns); i++)
-        if (widget->regex_tags[i] != -1)
-          {
-            vte_terminal_match_remove (VTE_TERMINAL (widget), widget->regex_tags[i]);
-            widget->regex_tags[i] = -1;
-          }
-    }
-  else
-    {
-      /* set all our patterns */
-      for (i = 0; i < G_N_ELEMENTS (regex_patterns); i++)
+      const TerminalRegexPattern *current_pattern = &regex_patterns[i];
+      gboolean should_be_enabled = highlight_urls
+                                   && (current_pattern->type != PATTERN_TYPE_PATH
+                                       || auto_detect_file_paths);
+
+      if (!should_be_enabled)
         {
-          /* continue if already set */
-          if (G_UNLIKELY (widget->regex_tags[i] != -1))
-            continue;
-
-          /* get the pattern */
-          pattern = &regex_patterns[i];
-
-          /* build the regex */
-          error = NULL;
-          regex = vte_regex_new_for_match (pattern->pattern, -1,
-                                           PCRE2_CASELESS | PCRE2_UTF | PCRE2_NO_UTF_CHECK | PCRE2_MULTILINE,
-                                           &error);
-
-          if (error == NULL
-              && (!vte_regex_jit (regex, PCRE2_JIT_COMPLETE, &error)
-                  || !vte_regex_jit (regex, PCRE2_JIT_PARTIAL_SOFT, &error)))
+          if (widget->regex_tags[i] != -1)
             {
-              g_critical ("Failed to JIT regular expression '%s': %s\n", pattern->pattern, error->message);
-              g_clear_error (&error);
+              vte_terminal_match_remove (VTE_TERMINAL (widget), widget->regex_tags[i]);
+              widget->regex_tags[i] = -1;
             }
-          if (G_UNLIKELY (error != NULL))
-            {
-              g_critical ("Failed to parse regular expression pattern %u: %s", i, error->message);
-              g_error_free (error);
-              continue;
-            }
+          continue;
+        }
 
-          /* set the new regular expression */
-          widget->regex_tags[i] = vte_terminal_match_add_regex (VTE_TERMINAL (widget), regex, 0);
+      /* continue if already set */
+      if (G_UNLIKELY (widget->regex_tags[i] != -1))
+        continue;
+
+      /* get the pattern */
+      pattern = current_pattern;
+
+      /* build the regex */
+      error = NULL;
+      regex = vte_regex_new_for_match (pattern->pattern, -1,
+                                       PCRE2_CASELESS | PCRE2_UTF | PCRE2_UCP
+                                       | PCRE2_NO_UTF_CHECK | PCRE2_MULTILINE,
+                                       &error);
+
+      if (error == NULL
+          && (!vte_regex_jit (regex, PCRE2_JIT_COMPLETE, &error)
+              || !vte_regex_jit (regex, PCRE2_JIT_PARTIAL_SOFT, &error)))
+        {
+          g_critical ("Failed to JIT regular expression '%s': %s\n", pattern->pattern, error->message);
+          g_clear_error (&error);
+        }
+      if (G_UNLIKELY (error != NULL))
+        {
+          g_critical ("Failed to parse regular expression pattern %u: %s", i, error->message);
+          g_error_free (error);
+          continue;
+        }
+
+      /* set the new regular expression */
+      widget->regex_tags[i] = vte_terminal_match_add_regex (VTE_TERMINAL (widget), regex, 0);
+      if (pattern->type != PATTERN_TYPE_PATH)
+        {
 #if VTE_CHECK_VERSION(0, 53, 0)
           vte_terminal_match_set_cursor_name (VTE_TERMINAL (widget), widget->regex_tags[i], "hand2");
 #else
           vte_terminal_match_set_cursor_type (VTE_TERMINAL (widget), widget->regex_tags[i], GDK_HAND2);
 #endif
-          /* release the regex owned by vte now */
-          vte_regex_unref (regex);
         }
+      /* release the regex owned by vte now */
+      vte_regex_unref (regex);
     }
+}
+
+
+
+static gboolean
+terminal_widget_regex_tag_is_path (TerminalWidget *widget,
+                                   gint tag)
+{
+  for (guint i = 0; i < G_N_ELEMENTS (regex_patterns); i++)
+    {
+      if (widget->regex_tags[i] == tag)
+        return regex_patterns[i].type == PATTERN_TYPE_PATH;
+    }
+
+  return FALSE;
 }
 
 
@@ -1994,7 +2459,8 @@ terminal_widget_get_link (TerminalWidget *widget,
 
       for (i = 0; i < G_N_ELEMENTS (widget->regex_pcre); i++)
         {
-          if (widget->regex_pcre[i] == NULL)
+          if (widget->regex_pcre[i] == NULL
+              || regex_patterns[i].type == PATTERN_TYPE_PATH)
             continue;
 
           match_data = pcre2_match_data_create_from_pattern_8 (widget->regex_pcre[i], NULL);
@@ -2025,6 +2491,33 @@ terminal_widget_get_link (TerminalWidget *widget,
           /* lookup the tag in our tags */
           if (widget->regex_tags[i] == tag)
             {
+              if (regex_patterns[i].type == PATTERN_TYPE_PATH)
+                {
+                  gchar *path = terminal_widget_candidate_to_path (widget, uri, TRUE);
+                  gchar *path_uri = NULL;
+                  gboolean path_available = path != NULL;
+
+                  if (path != NULL && g_file_test (path, G_FILE_TEST_EXISTS))
+                    path_uri = g_filename_to_uri (path, NULL, NULL);
+                  g_free (path);
+                  if (path_uri != NULL)
+                    {
+                      g_free (uri);
+                      result.uri = path_uri;
+                      result.type = PATTERN_TYPE_FILE;
+                      return result;
+                    }
+
+                  if (!path_available)
+                    {
+                      g_free (uri);
+                      return result;
+                    }
+
+                  result.uri = uri;
+                  result.type = PATTERN_TYPE_PATH;
+                  return result;
+                }
 
               if (regex_patterns[i].type == PATTERN_TYPE_FILE
                   && !terminal_widget_link_clickable (uri, PATTERN_TYPE_FILE))

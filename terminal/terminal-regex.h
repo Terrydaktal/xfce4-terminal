@@ -125,8 +125,11 @@
 /* Optional colon-prefixed port, e.g. ":1080", "" */
 #define PORT "(?x: \\:" N_1_65535 " )?"
 
-/* Omit the parentheses, see below */
-#define PATHCHARS_CLASS "[-[:alnum:]\\Q_$.+!*,:;@&=?/~#|%'\\E]"
+/* Omit the parentheses, see below. A newline is accepted only when it does
+ * not begin another URL and the next terminal line contains URI punctuation.
+ * This supports wrapped paths such as `nvidi\\na/inc` without absorbing an
+ * unrelated prose line. */
+#define PATHCHARS_CLASS "(?: [-[:alnum:]\\Q_$.+!*,:;@&=?/~#|%'\\E] | \\r?\\n (?! [[:space:]]* (?: (?i:https?|ftp|file):\\/\\/ | www\\. ) ) (?=[^[:space:][:cntrl:]]*[\\/?#=&%._~-]) )"
 /* Chars to end a URL. Apostrophe only allowed if there wasn't one in front of the URL, see bug 448044 */
 #define PATHTERM_CLASS "[-[:alnum:]\\Q_$+*:@&=/~#|%'\\E]"
 #define PATHTERM_NOAPOS_CLASS "[-[:alnum:]\\Q_$+*:@&=/~#|%\\E]"
@@ -151,5 +154,28 @@
 #define REGEX_URL_VOIP DEFS "(?i:h323:|sips?:)" USERPASS URL_HOST PORT VOIP_PATH
 #define REGEX_EMAIL DEFS "(?i:mailto:)?" USER "@" EMAIL_HOST
 #define REGEX_NEWS_MAN "(?i:news:|man:|info:|magnet:)[-[:alnum:]\\Q^_{|}~!\"#$%&'()*+,./;:=?`\\E]+"
+
+/*
+ * Candidate local paths. The result is validated against the terminal's
+ * current working directory before it becomes an actionable hyperlink. Paths
+ * with spaces must be quoted or supplied as OSC 8 hyperlinks; accepting
+ * unquoted spaces would merge paths with following command arguments.
+ *
+ * VTE exposes a visual row boundary as a newline to match regexes. Only allow
+ * one inside an unquoted path immediately after '/', where removing it cannot
+ * concatenate two path components. Indentation after the newline is accepted
+ * because wrapped terminal text can be copied with leading spaces.
+ */
+#define FILE_PATH_CHARS "[-[:alnum:]_~.+@]"
+#define FILE_PATH_PAREN_DEF "(?<FILE_PATH_PAREN>\\( (?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) )* \\) )"
+#define FILE_PATH_COMPONENT "(?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) )+"
+#define FILE_PATH_COMPONENT_NONGREEDY "(?: " FILE_PATH_CHARS " | (?&FILE_PATH_PAREN) )+?"
+#define FILE_PATH_SEPARATOR "(?: / (?: \\r? \\n [[:blank:]]* )? )"
+#define FILE_PATH_SLASHED "(?: (?: " FILE_PATH_SEPARATOR " | ~ " FILE_PATH_SEPARATOR " | \\.{1,2} " FILE_PATH_SEPARATOR " ) " FILE_PATH_COMPONENT " (?: " FILE_PATH_SEPARATOR " " FILE_PATH_COMPONENT " )* (?: " FILE_PATH_SEPARATOR " )? | (?: " FILE_PATH_COMPONENT " " FILE_PATH_SEPARATOR " )+ " FILE_PATH_COMPONENT " )"
+/* A final ')' is treated as surrounding prose. This intentionally favors
+ * incomplete-bracket text over a path whose final filename character is ')'.
+ * Parentheses inside a path remain part of FILE_PATH_COMPONENT. */
+#define FILE_PATH_END "(?: (?= \\) ) | (?<! \\) ) (?! \\( | [[:alnum:]_./~@-] ) )"
+#define REGEX_FILE_PATH "(?x: (?(DEFINE) " FILE_PATH_PAREN_DEF " ) (?<![-[:alnum:]_./~@(]) (?: [[:alpha:]_][[:alnum:]_-]* \\( \\K " FILE_PATH_SLASHED " (?= \\) ) | \\( \\K " FILE_PATH_SLASHED " (?= \\) ) | \" (?: / | ~/ | \\.{1,2}/ ) [^[:cntrl:]\"]+ \" | ' (?: / | ~/ | \\.{1,2}/ ) [^[:cntrl:]']+ ' | " FILE_PATH_SLASHED " | \\. (?=" FILE_PATH_CHARS "*[[:alpha:]_]) " FILE_PATH_COMPONENT " | (?: Makefile | GNUmakefile | Dockerfile | Containerfile | Jenkinsfile | Procfile | README | LICENSE | CHANGELOG | Kconfig | configure | meson\\.build ) | (?=" FILE_PATH_CHARS "*[[:alpha:]_]) " FILE_PATH_COMPONENT_NONGREEDY " \\. " FILE_PATH_COMPONENT_NONGREEDY " ) " FILE_PATH_END " )"
 
 #endif /* !TERMINAL_REGEX_H */
