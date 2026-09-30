@@ -40,6 +40,12 @@ typedef enum
   TERMINAL_ERROR_DISPLAY_MISMATCH,
   /* parsing the options failed */
   TERMINAL_ERROR_OPTIONS,
+  /* requested terminal tab does not exist */
+  TERMINAL_ERROR_TAB_NOT_FOUND,
+  /* requested terminal tab cannot accept input */
+  TERMINAL_ERROR_INPUT_DISABLED,
+  /* requested terminal tab no longer has a usable child PTY */
+  TERMINAL_ERROR_TAB_UNAVAILABLE,
   /* general failure */
   TERMINAL_ERROR_FAILED,
 } TerminalError;

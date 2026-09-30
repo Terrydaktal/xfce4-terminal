@@ -45,6 +45,9 @@ static const gchar terminal_gdbus_introspection_xml[] =
       "<method name='" TERMINAL_DBUS_METHOD_LIST_TERMINALS "'>"
         "<arg type='aa{sv}' name='terminals' direction='out'/>"
       "</method>"
+      "<method name='" TERMINAL_DBUS_METHOD_SEND_ENTER "'>"
+        "<arg type='s' name='tab-uuid' direction='in'/>"
+      "</method>"
     "</interface>"
   "</node>";
 // clang-format on
@@ -79,6 +82,16 @@ terminal_gdbus_dict_add_string (GVariantBuilder *dict,
 {
   g_variant_builder_add (dict, "{sv}", key, g_variant_new_string (value != NULL ? value : ""));
 }
+
+
+
+typedef struct
+{
+  TerminalApp *app;
+  gchar *tab_uuid;
+  gchar *text;
+  GDBusMethodInvocation *invocation;
+} TerminalGdbusSendTextData;
 
 
 
@@ -146,6 +159,168 @@ terminal_gdbus_list_terminals (TerminalApp *app,
 
 
 
+static TerminalScreen *
+terminal_gdbus_find_screen (TerminalApp *app,
+                            const gchar *tab_uuid)
+{
+  const GSList *windows;
+
+  windows = terminal_app_get_windows (app);
+  for (const GSList *window_link = windows; window_link != NULL; window_link = window_link->next)
+    {
+      TerminalWindow *window = TERMINAL_WINDOW (window_link->data);
+      GtkWidget *notebook = terminal_window_get_notebook (window);
+      GList *tabs;
+
+      if (!GTK_IS_CONTAINER (notebook))
+        continue;
+
+      tabs = gtk_container_get_children (GTK_CONTAINER (notebook));
+      for (GList *tab_link = tabs; tab_link != NULL; tab_link = tab_link->next)
+        {
+          TerminalScreen *screen = TERMINAL_SCREEN (tab_link->data);
+          const gchar *uuid = terminal_screen_get_uuid (screen);
+
+          if (g_strcmp0 (uuid, tab_uuid) == 0)
+            {
+              g_list_free (tabs);
+              return screen;
+            }
+        }
+      g_list_free (tabs);
+    }
+
+  return NULL;
+}
+
+
+
+static void
+terminal_gdbus_send_text (TerminalApp *app,
+                          const gchar *tab_uuid,
+                          const gchar *text,
+                          GDBusMethodInvocation *invocation)
+{
+  TerminalScreen *screen;
+
+  screen = terminal_gdbus_find_screen (app, tab_uuid);
+  if (screen == NULL)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             TERMINAL_ERROR, TERMINAL_ERROR_TAB_NOT_FOUND,
+                                             _("Unknown terminal tab UUID: %s"), tab_uuid);
+      return;
+    }
+
+  if (!terminal_screen_get_input_enabled (screen))
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             TERMINAL_ERROR, TERMINAL_ERROR_INPUT_DISABLED,
+                                             _("Terminal tab input is disabled"));
+      return;
+    }
+
+  if (!terminal_screen_can_feed_text (screen))
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             TERMINAL_ERROR, TERMINAL_ERROR_TAB_UNAVAILABLE,
+                                             _("Terminal tab has no usable child PTY"));
+      return;
+    }
+
+  terminal_screen_feed_text (screen, text);
+  g_dbus_method_invocation_return_value (invocation, NULL);
+}
+
+
+
+static void
+terminal_gdbus_send_text_uid_cb (GObject *source_object,
+                                 GAsyncResult *result,
+                                 gpointer user_data)
+{
+  GDBusConnection *connection = G_DBUS_CONNECTION (source_object);
+  TerminalGdbusSendTextData *data = user_data;
+  GError *error = NULL;
+  GVariant *reply;
+  guint32 uid;
+
+  reply = g_dbus_connection_call_finish (connection, result, &error);
+  if (reply == NULL)
+    {
+      g_dbus_method_invocation_return_error (data->invocation,
+                                             TERMINAL_ERROR, TERMINAL_ERROR_USER_MISMATCH,
+                                             _("Unable to verify caller identity: %s"),
+                                             error->message);
+      g_error_free (error);
+    }
+  else
+    {
+      g_variant_get (reply, "(u)", &uid);
+      if (uid != getuid ())
+        {
+          g_dbus_method_invocation_return_error (data->invocation,
+                                                 TERMINAL_ERROR, TERMINAL_ERROR_USER_MISMATCH,
+                                                 _("User id mismatch"));
+        }
+      else
+        {
+          terminal_gdbus_send_text (data->app, data->tab_uuid,
+                                    data->text, data->invocation);
+        }
+
+      g_variant_unref (reply);
+    }
+
+  g_object_unref (data->invocation);
+  g_object_unref (data->app);
+  g_free (data->tab_uuid);
+  g_free (data->text);
+  g_free (data);
+}
+
+
+
+static void
+terminal_gdbus_authorize_send_text (GDBusConnection *connection,
+                                    const gchar *sender,
+                                    TerminalApp *app,
+                                    const gchar *tab_uuid,
+                                    const gchar *text,
+                                    GDBusMethodInvocation *invocation)
+{
+  TerminalGdbusSendTextData *data;
+
+  if (sender == NULL || *sender == '\0')
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             TERMINAL_ERROR, TERMINAL_ERROR_USER_MISMATCH,
+                                             _("Unable to verify caller identity"));
+      return;
+    }
+
+  data = g_new0 (TerminalGdbusSendTextData, 1);
+  data->app = g_object_ref (app);
+  data->tab_uuid = g_strdup (tab_uuid);
+  data->text = g_strdup (text);
+  data->invocation = g_object_ref (invocation);
+
+  g_dbus_connection_call (connection,
+                          "org.freedesktop.DBus",
+                          "/org/freedesktop/DBus",
+                          "org.freedesktop.DBus",
+                          "GetConnectionUnixUser",
+                          g_variant_new ("(s)", sender),
+                          G_VARIANT_TYPE ("(u)"),
+                          G_DBUS_CALL_FLAGS_NONE,
+                          -1,
+                          NULL,
+                          terminal_gdbus_send_text_uid_cb,
+                          data);
+}
+
+
+
 static void
 terminal_gdbus_method_call (GDBusConnection *connection,
                             const gchar *sender,
@@ -160,6 +335,7 @@ terminal_gdbus_method_call (GDBusConnection *connection,
   guint32 uid = G_MAXUINT32;
   gchar *display_name = NULL;
   gchar **argv = NULL;
+  const gchar *tab_uuid = NULL;
   GError *error = NULL;
   gchar *display_name2;
 
@@ -206,6 +382,12 @@ terminal_gdbus_method_call (GDBusConnection *connection,
   else if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_LIST_TERMINALS) == 0)
     {
       terminal_gdbus_list_terminals (app, invocation);
+    }
+  else if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_SEND_ENTER) == 0)
+    {
+      g_variant_get (parameters, "(&s)", &tab_uuid);
+      terminal_gdbus_authorize_send_text (connection, sender, app, tab_uuid,
+                                          "\r", invocation);
     }
   else
     {

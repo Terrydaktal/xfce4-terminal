@@ -47,6 +47,9 @@ terminal_screen_get_foreground_process_group (TerminalScreen *screen);
 gchar *
 terminal_screen_get_pty_name (TerminalScreen *screen);
 
+gboolean
+terminal_screen_can_feed_text (TerminalScreen *screen);
+
 void
 terminal_screen_launch_child (TerminalScreen *screen);
 

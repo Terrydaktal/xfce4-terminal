@@ -1569,6 +1569,9 @@ terminal_screen_vte_child_exited (VteTerminal *terminal,
 
   g_object_get (G_OBJECT (screen->preferences), "misc-show-relaunch-dialog", &show_relaunch_dialog, NULL);
 
+  /* A screen with an exited child must not remain remotely writable. */
+  screen->pid = -1;
+
   if (G_LIKELY (!screen->hold))
     gtk_widget_destroy (GTK_WIDGET (screen));
   else if (show_relaunch_dialog)
@@ -3279,6 +3282,22 @@ terminal_screen_get_pty_name (TerminalScreen *screen)
     }
 
   return NULL;
+}
+
+
+
+gboolean
+terminal_screen_can_feed_text (TerminalScreen *screen)
+{
+  VtePty *pty;
+
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), FALSE);
+
+  if (screen->pid <= 0 || !vte_terminal_get_input_enabled (VTE_TERMINAL (screen->terminal)))
+    return FALSE;
+
+  pty = vte_terminal_get_pty (VTE_TERMINAL (screen->terminal));
+  return pty != NULL && vte_pty_get_fd (pty) >= 0;
 }
 
 
