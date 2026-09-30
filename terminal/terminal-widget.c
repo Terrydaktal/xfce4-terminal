@@ -853,19 +853,38 @@ terminal_widget_feed_link_to_child (TerminalWidget *widget,
                                     const gchar *uri,
                                     PatternType type)
 {
+  gchar *directory_prefix = NULL;
+  gchar *directory_suffix = NULL;
+  gchar *payload = NULL;
   gchar *quoted_text = NULL;
   gchar *text;
+
+  g_object_get (G_OBJECT (widget->preferences),
+                "misc-hyperlink-directory-prefix", &directory_prefix,
+                "misc-hyperlink-directory-suffix", &directory_suffix,
+                NULL);
 
   text = terminal_widget_link_to_input (uri, type);
   if (G_LIKELY (text != NULL && *text != '\0'))
     {
       quoted_text = terminal_widget_shell_quote_input (text);
 
-      vte_terminal_feed_child (VTE_TERMINAL (widget),
+      if (type == PATTERN_TYPE_FILE
+          && terminal_widget_link_clickable (uri, type)
+          && g_file_test (text, G_FILE_TEST_IS_DIR))
+        payload = g_strconcat (directory_prefix != NULL ? directory_prefix : "",
                                quoted_text,
-                               strlen (quoted_text));
+                               directory_suffix != NULL ? directory_suffix : "",
+                               NULL);
+
+      vte_terminal_feed_child (VTE_TERMINAL (widget),
+                               payload != NULL ? payload : quoted_text,
+                               payload != NULL ? strlen (payload) : strlen (quoted_text));
     }
 
+  g_free (directory_prefix);
+  g_free (directory_suffix);
+  g_free (payload);
   g_free (quoted_text);
   g_free (text);
 }

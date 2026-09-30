@@ -122,6 +122,8 @@ enum
   PROP_MISC_HYPERLINK_INSERT_MIDDLE_CLICK,
   PROP_MISC_HYPERLINK_OPEN_BUTTON,
   PROP_MISC_HYPERLINK_OPEN_MODIFIER,
+  PROP_MISC_HYPERLINK_DIRECTORY_PREFIX,
+  PROP_MISC_HYPERLINK_DIRECTORY_SUFFIX,
   PROP_SCROLLING_BAR,
   PROP_OVERLAY_SCROLLING,
   PROP_SCROLLING_LINES,
@@ -1181,6 +1183,30 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
                        0u, G_MAXUINT,
                        GDK_CONTROL_MASK,
                        G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-directory-prefix:
+   *
+   * Prefix added for directory paths inserted by hyperlink-insert action.
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_DIRECTORY_PREFIX] =
+    g_param_spec_string ("misc-hyperlink-directory-prefix",
+                         NULL,
+                         "MiscHyperlinkDirectoryPrefix",
+                         "",
+                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-hyperlink-directory-suffix:
+   *
+   * Suffix added for directory paths inserted by hyperlink-insert action.
+   **/
+  preferences_props[PROP_MISC_HYPERLINK_DIRECTORY_SUFFIX] =
+    g_param_spec_string ("misc-hyperlink-directory-suffix",
+                         NULL,
+                         "MiscHyperlinkDirectorySuffix",
+                         "",
+                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   /**
    * TerminalPreferences:scrolling-bar:
