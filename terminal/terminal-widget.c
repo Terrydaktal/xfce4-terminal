@@ -119,6 +119,11 @@ terminal_widget_open_uri (TerminalWidget *widget,
                           const gchar *wlink,
                           PatternType type,
                           guint32 event_time);
+static gboolean
+terminal_widget_is_pcmanfm_selection_uri (const gchar *uri);
+static gboolean
+terminal_widget_open_pcmanfm_selection_uri (GtkWindow *window,
+                                            const gchar *uri);
 static void
 terminal_widget_update_highlight_urls (TerminalWidget *widget);
 static gboolean
@@ -1574,7 +1579,11 @@ terminal_widget_open_uri (TerminalWidget *widget,
   if (event_time == 0)
     event_time = gtk_get_current_event_time ();
 
-  if (!gtk_show_uri_on_window (window, uri, event_time, &error))
+  if (type == PATTERN_TYPE_FILE && terminal_widget_is_pcmanfm_selection_uri (uri))
+    {
+      terminal_widget_open_pcmanfm_selection_uri (window, uri);
+    }
+  else if (!gtk_show_uri_on_window (window, uri, event_time, &error))
     {
       /* tell the user that we were unable to open the responsible application */
       xfce_dialog_show_error (window, error, _("Failed to open the URL '%s'"), uri);
@@ -1582,6 +1591,75 @@ terminal_widget_open_uri (TerminalWidget *widget,
     }
 
   g_free (uri);
+}
+
+
+
+static gboolean
+terminal_widget_is_pcmanfm_selection_uri (const gchar *uri)
+{
+  const gchar *query;
+  const gchar *parameter;
+
+  if (!g_str_has_prefix (uri, "file://"))
+    return FALSE;
+
+  query = strchr (uri, '?');
+  if (query == NULL)
+    return FALSE;
+
+  parameter = query + 1;
+  while (*parameter != '\0' && *parameter != '#')
+    {
+      if (g_str_has_prefix (parameter, "select=")
+          && (parameter == query + 1 || parameter[-1] == '&'))
+        return TRUE;
+
+      parameter = strchr (parameter, '&');
+      if (parameter == NULL)
+        break;
+      parameter++;
+    }
+
+  return FALSE;
+}
+
+
+
+static gboolean
+terminal_widget_open_pcmanfm_selection_uri (GtkWindow *window,
+                                            const gchar *uri)
+{
+  gchar *pcmanfm;
+  gchar *argv[3];
+  GError *error = NULL;
+  gboolean result;
+
+  pcmanfm = g_find_program_in_path ("pcmanfm");
+  if (pcmanfm == NULL)
+    {
+      g_set_error (&error, G_SPAWN_ERROR, G_SPAWN_ERROR_NOENT,
+                   _("The pcmanfm executable was not found on PATH"));
+      result = FALSE;
+    }
+  else
+    {
+      argv[0] = pcmanfm;
+      argv[1] = (gchar *) uri;
+      argv[2] = NULL;
+      result = g_spawn_async (NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
+                              NULL, NULL, NULL, &error);
+    }
+
+  if (!result)
+    {
+      xfce_dialog_show_error (window, error,
+                              _("Failed to open the PCManFM selection URI '%s'"), uri);
+      g_clear_error (&error);
+    }
+
+  g_free (pcmanfm);
+  return result;
 }
 
 
