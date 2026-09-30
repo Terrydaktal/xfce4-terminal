@@ -569,6 +569,15 @@ terminal_widget_context_menu_copy (TerminalWidget *widget,
 
 
 static void
+terminal_widget_context_menu_copy_all (TerminalWidget *widget)
+{
+  vte_terminal_select_all (VTE_TERMINAL (widget));
+  vte_terminal_copy_clipboard_format (VTE_TERMINAL (widget), VTE_FORMAT_TEXT);
+}
+
+
+
+static void
 terminal_widget_context_menu_open (TerminalWidget *widget,
                                    GtkWidget *item)
 {
@@ -600,6 +609,7 @@ terminal_widget_context_menu (TerminalWidget *widget,
   GMainLoop *loop;
   GtkWidget *menu = NULL;
   GtkWidget *item_copy = NULL;
+  GtkWidget *item_copy_all;
   GtkWidget *item_open = NULL;
   GtkWidget *item_separator = NULL;
   GList *children;
@@ -662,6 +672,11 @@ terminal_widget_context_menu (TerminalWidget *widget,
       g_free (link.uri);
     }
 
+  item_copy_all = gtk_menu_item_new_with_label (_("Copy All Scrollback"));
+  g_signal_connect_swapped (G_OBJECT (item_copy_all), "activate",
+                            G_CALLBACK (terminal_widget_context_menu_copy_all), widget);
+  gtk_menu_shell_prepend (GTK_MENU_SHELL (menu), item_copy_all);
+
   gtk_widget_show_all (menu);
 
   /* take a reference on the menu */
@@ -683,6 +698,7 @@ terminal_widget_context_menu (TerminalWidget *widget,
   /* remove the additional items (if any) */
   if (item_separator != NULL)
     gtk_widget_destroy (item_separator);
+  gtk_widget_destroy (item_copy_all);
   if (item_open != NULL)
     gtk_widget_destroy (item_open);
   if (item_copy != NULL)
