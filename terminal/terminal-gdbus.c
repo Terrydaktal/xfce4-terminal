@@ -48,6 +48,9 @@ static const gchar terminal_gdbus_introspection_xml[] =
       "<method name='" TERMINAL_DBUS_METHOD_SEND_ENTER "'>"
         "<arg type='s' name='tab-uuid' direction='in'/>"
       "</method>"
+      "<method name='" TERMINAL_DBUS_METHOD_SEND_YES "'>"
+        "<arg type='s' name='tab-uuid' direction='in'/>"
+      "</method>"
     "</interface>"
   "</node>";
 // clang-format on
@@ -388,6 +391,12 @@ terminal_gdbus_method_call (GDBusConnection *connection,
       g_variant_get (parameters, "(&s)", &tab_uuid);
       terminal_gdbus_authorize_send_text (connection, sender, app, tab_uuid,
                                           "\r", invocation);
+    }
+  else if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_SEND_YES) == 0)
+    {
+      g_variant_get (parameters, "(&s)", &tab_uuid);
+      terminal_gdbus_authorize_send_text (connection, sender, app, tab_uuid,
+                                          "y", invocation);
     }
   else
     {
