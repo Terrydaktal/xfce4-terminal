@@ -47,6 +47,29 @@ VTE does not retain the process that originally emitted screen content, so the
 foreground-process allowlist is evaluated at click time rather than against
 the historical producer of a line.
 
+For local tmux clients launched with an explicit absolute `-S` socket (including
+tmux-simple), path resolution now follows that client's active pane. A bounded
+read-only query to the same tmux binary maps the client PID to its pane; `/proc`
+then supplies the pane's foreground process and current working directory.
+This preserves the application allowlist and resolves relative paths against
+the program's directory rather than the tmux attach command's old directory.
+Queries happen only during a path action, with a 250 ms timeout. Missing or
+unresponsive sockets fail closed; no server is created and no shell is invoked.
+This does not guess a remote SSH/Mosh machine's filesystem or resolve clients
+using implicit/default tmux sockets.
+
+Explicit OSC 8 links also need tmux's `hyperlinks` terminal feature. tmux-simple
+enables it for desktop attachments. After updating this fork, open a new
+terminal window and reattach to the existing session; the session's programs
+do not need restarting. Ctrl+click opens the file; Ctrl+Shift+click retains the
+existing parent-directory-and-selection action. Mouse reporting remains enabled
+for normal application clicks and scrolling.
+
+The `test-terminal-links` build target exercises those actions through an actual
+tmux-simple server, a real widget, and temporary application/file-manager
+recorders. It is driven by `~/Dev/tmux-simple/tests/test_hyperlinks.py` with a
+private HOME/XDG tree, Xvfb and D-Bus; it must not run against the real desktop.
+
 Double-clicking an OSC 8 hyperlink or an automatically detected link selects its
 whole displayed span, including spaces, parentheses, Unicode text, and wrapping
 across visible rows. Selection follows the label's boundaries rather than the

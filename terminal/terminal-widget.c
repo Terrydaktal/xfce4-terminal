@@ -43,6 +43,7 @@
 #include "terminal-preferences.h"
 #include "terminal-private.h"
 #include "terminal-regex.h"
+#include "terminal-tmux.h"
 #include "terminal-util.h"
 #include "terminal-widget.h"
 
@@ -1294,6 +1295,8 @@ terminal_widget_foreground_process_allows_path_detection (TerminalWidget *widget
 
   pty_fd = vte_pty_get_fd (pty);
   pgrp = pty_fd >= 0 ? tcgetpgrp (pty_fd) : -1;
+  if (pgrp > 0 && terminal_widget_process_application (pgrp) == TERMINAL_FOREGROUND_TMUX)
+    pgrp = terminal_tmux_pane_foreground_pid (pgrp);
   matches = pgrp > 0 && terminal_widget_process_matches_allowlist (pgrp, allowlist);
   g_free (allowlist);
   return matches;
@@ -1819,6 +1822,7 @@ terminal_widget_get_current_directory_path (TerminalWidget *widget)
 {
   const gchar *cwd_uri;
   gchar *cwd_path = NULL;
+  gboolean tmux_pane = FALSE;
   VtePty *pty;
   gint pty_fd;
   pid_t pgrp;
@@ -1830,6 +1834,13 @@ terminal_widget_get_current_directory_path (TerminalWidget *widget)
       if (pty_fd >= 0)
         {
           pgrp = tcgetpgrp (pty_fd);
+          if (pgrp > 0 && terminal_widget_process_application (pgrp) == TERMINAL_FOREGROUND_TMUX)
+            {
+              tmux_pane = TRUE;
+              pgrp = terminal_tmux_pane_foreground_pid (pgrp);
+              if (pgrp <= 0)
+                return NULL;
+            }
           if (pgrp > 0)
             {
               gchar *proc_cwd = g_strdup_printf ("/proc/%d/cwd", (gint) pgrp);
@@ -1842,7 +1853,7 @@ terminal_widget_get_current_directory_path (TerminalWidget *widget)
         }
     }
 
-  if (cwd_path != NULL)
+  if (cwd_path != NULL || tmux_pane)
     return cwd_path;
 
   /* VTE's reported URI is useful during shell startup, but must not override
