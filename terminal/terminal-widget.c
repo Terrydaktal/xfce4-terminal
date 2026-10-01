@@ -1130,6 +1130,21 @@ terminal_widget_foreground_process_is_codex (TerminalWidget *widget)
   return terminal_widget_foreground_application (widget) == TERMINAL_FOREGROUND_CODEX;
 }
 
+gboolean
+terminal_widget_copy_tmux_selection (TerminalWidget *widget)
+{
+  VtePty *pty = vte_terminal_get_pty (VTE_TERMINAL (widget));
+  pid_t pgrp;
+  gint fd;
+
+  if (!VTE_IS_PTY (pty) || (fd = vte_pty_get_fd (pty)) < 0)
+    return FALSE;
+  pgrp = tcgetpgrp (fd);
+  if (pgrp <= 0 || terminal_widget_process_application (pgrp) != TERMINAL_FOREGROUND_TMUX)
+    return FALSE;
+  return terminal_tmux_copy_selection (pgrp);
+}
+
 
 
 static gboolean

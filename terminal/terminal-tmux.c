@@ -36,7 +36,7 @@ query_expired (gpointer data)
 }
 
 static gchar *
-query_clients (const gchar *executable, const gchar *socket)
+query_command (const gchar *const *argv)
 {
   GMainContext *context = g_main_context_new ();
   GSource *timeout = g_timeout_source_new (250);
@@ -47,8 +47,7 @@ query_clients (const gchar *executable, const gchar *socket)
   /* No shell, server startup, configuration reload, or default socket lookup. */
   g_subprocess_launcher_unsetenv (launcher, "TMUX");
   g_subprocess_launcher_unsetenv (launcher, "TMUX_PANE");
-  query.process = g_subprocess_launcher_spawn (launcher, NULL, executable, "-N", "-S", socket,
-                                               "list-clients", "-F", "#{client_pid} #{pane_pid}", NULL);
+  query.process = g_subprocess_launcher_spawnv (launcher, argv, NULL);
   if (query.process != NULL)
     {
       query.cancel = g_cancellable_new ();
@@ -74,6 +73,13 @@ query_clients (const gchar *executable, const gchar *socket)
   g_main_context_unref (context);
   g_object_unref (launcher);
   return query.output;
+}
+
+static gchar *
+query_clients (const gchar *executable, const gchar *socket, const gchar *format)
+{
+  const gchar *argv[] = { executable, "-N", "-S", socket, "list-clients", "-F", format, NULL };
+  return query_command (argv);
 }
 
 static gchar *
@@ -135,7 +141,7 @@ terminal_tmux_pane_foreground_pid (pid_t client_pid)
     return 0;
   /* Use the attached client's binary, not a possibly incompatible PATH tmux. */
   executable = g_strdup_printf ("/proc/%d/exe", (gint) client_pid);
-  output = query_clients (executable, socket);
+  output = query_clients (executable, socket, "#{client_pid} #{pane_pid}");
   g_free (executable);
   g_free (socket);
   if (output == NULL)
@@ -168,5 +174,60 @@ terminal_tmux_pane_foreground_pid (pid_t client_pid)
 #else
   (void) client_pid;
   return 0;
+#endif
+}
+
+gboolean
+terminal_tmux_copy_selection (pid_t client_pid)
+{
+#ifdef __linux__
+  gchar *socket = client_socket (client_pid);
+  gchar *executable, *output, **lines;
+  gboolean handled = FALSE;
+
+  if (socket == NULL)
+    return FALSE;
+  executable = g_strdup_printf ("/proc/%d/exe", (gint) client_pid);
+  output = query_clients (executable, socket,
+                          "#{client_pid} #{pane_id} #{client_name} #{pane_mode} #{selection_present}");
+  if (output == NULL)
+    {
+      /* Unknown selection ownership is not permission to interrupt the pane. */
+      handled = TRUE;
+      g_debug ("Failed to query the attached tmux selection; Copy was not forwarded");
+    }
+  if (output != NULL)
+    {
+      lines = g_strsplit (output, "\n", -1);
+      for (guint i = 0; lines[i] != NULL; i++)
+        {
+          long client;
+          guint selected;
+          gchar pane[32], target[4096], mode[32], extra;
+          gchar *result;
+
+          if (sscanf (lines[i], "%ld %31s %4095s %31s %u %c",
+                      &client, pane, target, mode, &selected, &extra) != 5
+              || client != client_pid || strcmp (mode, "copy-mode") != 0 || selected != 1)
+            continue;
+          const gchar *argv[] = { executable, "-N", "-S", socket, "send-keys",
+                                  "-c", target, "-t", pane, "-X", "copy-pipe-no-clear", NULL };
+          result = query_command (argv);
+          /* A failed copy must not become SIGINT in the selected program. */
+          handled = TRUE;
+          if (result == NULL)
+            g_warning ("Failed to copy the attached tmux history selection");
+          g_free (result);
+          break;
+        }
+      g_strfreev (lines);
+    }
+  g_free (output);
+  g_free (executable);
+  g_free (socket);
+  return handled;
+#else
+  (void) client_pid;
+  return FALSE;
 #endif
 }

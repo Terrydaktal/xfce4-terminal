@@ -2625,14 +2625,14 @@ terminal_screen_has_selection (TerminalScreen *screen)
  * @screen  : A #TerminalScreen.
  *
  * Places the selected text in the terminal in the #GDK_SELECTION_CLIPBOARD selection.
- * Returns %FALSE when VTE has no selection, allowing the application to handle Copy.
+ * Returns %FALSE when neither VTE nor the attached local tmux owns a selection.
  **/
 gboolean
 terminal_screen_copy_clipboard (TerminalScreen *screen)
 {
   g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), FALSE);
   if (!vte_terminal_get_has_selection (VTE_TERMINAL (screen->terminal)))
-    return FALSE;
+    return terminal_widget_copy_tmux_selection (TERMINAL_WIDGET (screen->terminal));
   vte_terminal_copy_clipboard_format (VTE_TERMINAL (screen->terminal), VTE_FORMAT_TEXT);
   return TRUE;
 }

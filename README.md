@@ -94,7 +94,13 @@ keyboard or touch handling.
 ### Copy Shortcuts And Application Selections
 
 The Copy accelerator consumes the key only when there is text to copy locally.
-A native VTE selection is copied first.
+A native VTE selection is copied first. For a local tmux client with an explicit,
+owned `-S` socket, an existing history selection is copied using
+`copy-pipe-no-clear`, targeting that client and pane. This preserves both its
+selection and viewport, without sending Ctrl+C to the program. The socket lookup
+and copy request are each bounded to 250 ms and run only on Copy, not on ordinary
+typing or mouse movement. A failed local tmux query consumes Copy rather than
+risk interrupting a program whose selection ownership could not be checked.
 
 Otherwise the original shortcut reaches the foreground application. This matters
 when Copy is bound to Ctrl+C: Codex draws its own selection, so VTE reports no
@@ -105,8 +111,8 @@ or add OSC52 support to VTE. A terminal-owned Shift+drag selection can always be
 copied locally, including over SSH.
 
 `test-terminal-copy` exercises the actual window accelerator and PTY, including
-application highlighting and native selection precedence. Run GUI tests under
-Xvfb, serially to avoid shared clipboard ownership:
+application highlighting, native selection precedence, and an isolated tmux
+server. Run GUI tests under Xvfb, serially to avoid shared clipboard ownership:
 
 ```sh
 xvfb-run -a meson test -C build --num-processes 1 --print-errorlogs

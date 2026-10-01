@@ -11,6 +11,44 @@
 
 #include "terminal-test-utils.h"
 
+static gchar *self;
+
+static int
+record_input (const gchar *path, gboolean mouse_reporting)
+{
+  struct termios attrs;
+  gchar buffer[256];
+  ssize_t count;
+  int output;
+
+  if (tcgetattr (STDIN_FILENO, &attrs) != 0)
+    return 1;
+  cfmakeraw (&attrs);
+  if (tcsetattr (STDIN_FILENO, TCSANOW, &attrs) != 0)
+    return 1;
+  output = open (path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (output < 0)
+    return 1;
+  for (guint i = 0; i < 100; i++)
+    dprintf (STDOUT_FILENO, "copy-test-history-%03u\r\n", i);
+  if (mouse_reporting)
+    dprintf (STDOUT_FILENO, "\033[?1002h\033[?1006h\033[7mCOPY-TEST-READY\033[0m\r\n");
+  else
+    dprintf (STDOUT_FILENO, "COPY-TEST-READY\r\n");
+  while ((count = read (STDIN_FILENO, buffer, sizeof buffer)) > 0)
+    {
+      for (ssize_t offset = 0; offset < count;)
+        {
+          ssize_t written = write (output, buffer + offset, count - offset);
+          if (written <= 0)
+            return 1;
+          offset += written;
+        }
+    }
+  close (output);
+  return 0;
+}
+
 static GtkWidget *
 find_terminal (GtkWidget *widget)
 {
@@ -135,9 +173,186 @@ copy_application_selection (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
   g_free (text);
 }
 
+static gchar *
+tmux_command (const gchar *binary, const gchar *socket, const gchar *const *command)
+{
+  GPtrArray *argv = g_ptr_array_new ();
+  GSubprocess *child;
+  gchar *output;
+  GError *error = NULL;
+
+  g_ptr_array_add (argv, (gpointer) binary);
+  g_ptr_array_add (argv, "-N");
+  g_ptr_array_add (argv, "-S");
+  g_ptr_array_add (argv, (gpointer) socket);
+  for (guint i = 0; command[i] != NULL; i++)
+    g_ptr_array_add (argv, (gpointer) command[i]);
+  g_ptr_array_add (argv, NULL);
+  child = g_subprocess_newv ((const gchar *const *) argv->pdata, G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error);
+  g_assert_no_error (error);
+  g_assert_true (g_subprocess_communicate_utf8 (child, NULL, NULL, &output, NULL, &error));
+  g_assert_no_error (error);
+  g_assert_true (g_subprocess_get_successful (child));
+  g_object_unref (child);
+  g_ptr_array_unref (argv);
+  return output;
+}
+
+static void
+copy_through_tmux (Fixture *fixture, gconstpointer data)
+{
+  gboolean selection = GPOINTER_TO_INT (data) == 1;
+  gboolean stalled = GPOINTER_TO_INT (data) == 3;
+  gboolean history = GPOINTER_TO_INT (data) < 2;
+  gchar *binary = g_find_program_in_path ("tmux");
+  gchar *directory, *socket, *config, *recording, *copied, *contents, *before, *after;
+  const gchar *state[] = { "display-message", "-p", "-t", "=copy-test:.",
+                           "#{pane_in_mode}|#{scroll_position}|#{selection_present}", NULL };
+  const gchar *select[] = { "copy-mode", ";", "send-keys", "-X", "-N", "5", "scroll-up",
+                            ";", "send-keys", "-X", "start-of-line",
+                            ";", "send-keys", "-X", "begin-selection",
+                            ";", "send-keys", "-X", "end-of-line", NULL };
+  const gchar *browse[] = { "copy-mode", ";", "send-keys", "-X", "-N", "5", "scroll-up", NULL };
+  const gchar *stop[] = { "kill-server", NULL };
+  const gchar *show[] = { "show-buffer", NULL };
+  GError *error = NULL;
+  gint64 deadline;
+  gsize length;
+  pid_t client;
+  int status;
+
+  if (binary == NULL)
+    {
+      g_test_skip ("tmux is unavailable");
+      return;
+    }
+  directory = g_dir_make_tmp ("xfce-terminal-copy-XXXXXX", &error);
+  g_assert_no_error (error);
+  socket = g_build_filename (directory, "server.sock", NULL);
+  config = g_build_filename (directory, "tmux.conf", NULL);
+  recording = g_build_filename (directory, "input", NULL);
+  copied = g_build_filename (directory, "copied", NULL);
+  contents = g_strdup_printf ("set -g status off\nset -g mouse on\nset -g scroll-on-input on\n"
+                              "set -s exit-unattached on\nset -g destroy-unattached on\n"
+                              "set -s set-clipboard off\nset -g history-limit 1000\n"
+                              "set -g copy-command 'cat > %s'\n",
+                              copied);
+  g_assert_true (g_file_set_contents (config, contents, -1, &error));
+  g_assert_no_error (error);
+  g_free (contents);
+  client = fork ();
+  g_assert_cmpint (client, >=, 0);
+  if (client == 0)
+    {
+      if (setsid () < 0 || ioctl (fixture->slave, TIOCSCTTY, 0) < 0)
+        _exit (126);
+      for (int fd = STDIN_FILENO; fd <= STDERR_FILENO; fd++)
+        if (dup2 (fixture->slave, fd) < 0)
+          _exit (126);
+      gchar *argv[] = { binary, "-S", socket, "-f", config, "new-session", "-s", "copy-test",
+                        "--", self, "--record", recording, history ? "history" : "mouse", NULL };
+      execv (binary, argv);
+      _exit (127);
+    }
+  deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
+  do
+    {
+      settle ();
+      contents = vte_terminal_get_text_format (fixture->terminal, VTE_FORMAT_TEXT);
+      gboolean ready = strstr (contents, "COPY-TEST-READY") != NULL;
+      g_free (contents);
+      if (ready)
+        break;
+    }
+  while (g_get_monotonic_time () < deadline);
+  if (!g_file_test (recording, G_FILE_TEST_EXISTS))
+    {
+      contents = vte_terminal_get_text_format (fixture->terminal, VTE_FORMAT_TEXT);
+      g_test_message ("tmux startup output: %s", contents);
+      g_free (contents);
+    }
+  g_assert_true (g_file_test (recording, G_FILE_TEST_EXISTS));
+  if (history)
+    g_free (tmux_command (binary, socket, selection ? select : browse));
+  settle ();
+  before = tmux_command (binary, socket, state);
+  if (selection)
+    g_assert_cmpstr (before, ==, "1|5|1\n");
+  g_assert_false (vte_terminal_get_has_selection (fixture->terminal));
+  if (stalled)
+    {
+      const gchar *pid_command[] = { "display-message", "-p", "#{pid}", NULL };
+      gchar *pid_text = tmux_command (binary, socket, pid_command);
+      pid_t server = (pid_t) g_ascii_strtoll (pid_text, NULL, 10);
+      g_free (pid_text);
+      g_assert_cmpint (server, >, 1);
+      g_assert_cmpint (kill (server, SIGSTOP), ==, 0);
+      gint64 started = g_get_monotonic_time ();
+      press_copy (fixture);
+      g_assert_cmpint (kill (server, SIGCONT), ==, 0);
+      g_assert_cmpint (g_get_monotonic_time () - started, <, G_USEC_PER_SEC);
+      settle ();
+      g_assert_true (g_file_get_contents (recording, &contents, &length, NULL));
+      g_assert_cmpuint (length, ==, 0);
+      g_free (contents);
+      after = tmux_command (binary, socket, state);
+      g_assert_cmpstr (before, ==, after);
+      goto cleanup;
+    }
+  press_copy (fixture);
+  deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
+  do
+    {
+      settle ();
+      contents = NULL;
+      length = 0;
+      g_file_get_contents (selection ? copied : recording, &contents, &length, NULL);
+      if (length > 0)
+        break;
+      g_free (contents);
+    }
+  while (g_get_monotonic_time () < deadline);
+  g_assert_cmpuint (length, >, 0);
+  after = tmux_command (binary, socket, state);
+  if (selection)
+    {
+      gchar *buffer = tmux_command (binary, socket, show);
+      g_assert_cmpstr (contents, ==, buffer);
+      g_assert_cmpstr (before, ==, after);
+      g_assert_nonnull (strstr (contents, "copy-test-history-"));
+      g_free (buffer);
+      gchar *input;
+      g_assert_true (g_file_get_contents (recording, &input, &length, NULL));
+      g_assert_cmpuint (length, ==, 0);
+      g_free (input);
+    }
+  else
+    {
+      g_assert_cmpuint (length, ==, 1);
+      g_assert_cmpint (contents[0], ==, '\003');
+      g_assert_true (g_str_has_prefix (after, "0|"));
+    }
+  g_free (contents);
+cleanup:
+  g_free (before);
+  g_free (after);
+  g_free (tmux_command (binary, socket, stop));
+  while (waitpid (client, &status, 0) < 0 && errno == EINTR)
+    ;
+  remove_test_directory (directory);
+  g_free (directory);
+  g_free (socket);
+  g_free (config);
+  g_free (recording);
+  g_free (copied);
+  g_free (binary);
+}
+
 int
 main (int argc, char **argv)
 {
+  if (argc == 4 && strcmp (argv[1], "--record") == 0)
+    return record_input (argv[2], strcmp (argv[3], "mouse") == 0);
   if (g_getenv ("TERMINAL_MOUSE_TEST_SESSION") == NULL)
     return run_isolated (argc, argv);
   g_unsetenv ("TMUX");
@@ -146,6 +361,8 @@ main (int argc, char **argv)
   g_test_init (&argc, &argv, NULL);
   if (!gtk_init_check (&argc, &argv))
     return 77;
+  self = g_file_read_link ("/proc/self/exe", NULL);
+  g_assert_nonnull (self);
   g_test_add ("/terminal/copy/native-selection", Fixture, NULL,
               setup_window, copy_native_selection, teardown);
   g_test_add ("/terminal/copy/application-selection", Fixture, GINT_TO_POINTER (1),
@@ -154,6 +371,15 @@ main (int argc, char **argv)
               setup_window, copy_application_selection, teardown);
   g_test_add ("/terminal/copy/native-over-application-selection", Fixture, GINT_TO_POINTER (1),
               setup_window, copy_native_selection, teardown);
+  g_test_add ("/terminal/copy/tmux-history-selection", Fixture, GINT_TO_POINTER (1),
+              setup_window, copy_through_tmux, teardown);
+  g_test_add ("/terminal/copy/tmux-application-selection", Fixture, GINT_TO_POINTER (2),
+              setup_window, copy_through_tmux, teardown);
+  g_test_add ("/terminal/copy/tmux-history-without-selection", Fixture, NULL,
+              setup_window, copy_through_tmux, teardown);
+  g_test_add ("/terminal/copy/tmux-query-timeout-does-not-interrupt", Fixture, GINT_TO_POINTER (3),
+              setup_window, copy_through_tmux, teardown);
   int result = g_test_run ();
+  g_free (self);
   return result;
 }
