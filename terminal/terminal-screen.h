@@ -97,7 +97,7 @@ terminal_screen_set_working_directory (TerminalScreen *screen,
 gboolean
 terminal_screen_has_selection (TerminalScreen *screen);
 
-void
+gboolean
 terminal_screen_copy_clipboard (TerminalScreen *screen);
 void
 terminal_screen_copy_clipboard_html (TerminalScreen *screen);

@@ -38,7 +38,7 @@ settle (void)
   while (g_get_monotonic_time () < deadline);
 }
 
-static void
+static void G_GNUC_UNUSED
 setup (Fixture *fixture, gconstpointer data)
 {
   GError *error = NULL;

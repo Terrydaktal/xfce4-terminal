@@ -2365,9 +2365,10 @@ terminal_window_action_close_window (TerminalWindow *window)
 static gboolean
 terminal_window_action_copy (TerminalWindow *window)
 {
-  if (G_LIKELY (window->priv->active != NULL))
-    terminal_screen_copy_clipboard (window->priv->active);
-  return TRUE;
+  /* Application-drawn selections must receive their own Copy shortcut. */
+  if (window->priv->active == NULL)
+    return FALSE;
+  return terminal_screen_copy_clipboard (window->priv->active);
 }
 
 

@@ -91,6 +91,33 @@ This selects text currently displayed by tmux; selections spanning multiple page
 of tmux's history still require tmux copy mode. It does not change Termux's Android
 keyboard or touch handling.
 
+### Copy Shortcuts And Application Selections
+
+The Copy accelerator consumes the key only when there is text to copy locally.
+A native VTE selection is copied first.
+
+Otherwise the original shortcut reaches the foreground application. This matters
+when Copy is bound to Ctrl+C: Codex draws its own selection, so VTE reports no
+selection. Consuming the accelerator in that case used to prevent Codex's copy
+handler from running. Without a selection, Ctrl+C can still interrupt the program.
+Forwarding the shortcut does not itself provide an application clipboard backend
+or add OSC52 support to VTE. A terminal-owned Shift+drag selection can always be
+copied locally, including over SSH.
+
+`test-terminal-copy` exercises the actual window accelerator and PTY, including
+application highlighting and native selection precedence. Run GUI tests under
+Xvfb, serially to avoid shared clipboard ownership:
+
+```sh
+xvfb-run -a meson test -C build --num-processes 1 --print-errorlogs
+```
+
+The installed launcher disables XFCE's shared server. Open a new terminal window
+after rebuilding and reattach the existing tmux session; the running tmux server
+and its jobs do not need restarting for this shortcut change. Application clipboard
+delivery is separate: tmux-simple's application-clipboard patch requires a freshly
+started patched tmux server; reattaching cannot upgrade a running old server.
+
 ### Modified Enter With tmux
 
 When tmux owns the terminal's foreground process group, Shift+Enter, Ctrl+Enter
