@@ -172,10 +172,12 @@
 #define FILE_PATH_COMPONENT_NONGREEDY "(?: " FILE_PATH_CHARS " | (?&FILE_PATH_PAREN) )+?"
 #define FILE_PATH_SEPARATOR "(?: / (?: \\r? \\n [[:blank:]]* )? )"
 #define FILE_PATH_SLASHED "(?: (?: " FILE_PATH_SEPARATOR " | ~ " FILE_PATH_SEPARATOR " | \\.{1,2} " FILE_PATH_SEPARATOR " ) " FILE_PATH_COMPONENT " (?: " FILE_PATH_SEPARATOR " " FILE_PATH_COMPONENT " )* (?: " FILE_PATH_SEPARATOR " )? | (?: " FILE_PATH_COMPONENT " " FILE_PATH_SEPARATOR " )+ " FILE_PATH_COMPONENT " )"
+/* Keep an anchor with its path, including inside prose/tool parentheses. */
+#define FILE_PATH_FRAGMENT "(?: \\# [-[:alnum:]_~.+@%:/?&=#]* )?"
 /* A final ')' is treated as surrounding prose. This intentionally favors
  * incomplete-bracket text over a path whose final filename character is ')'.
  * Parentheses inside a path remain part of FILE_PATH_COMPONENT. */
-#define FILE_PATH_END "(?: (?= \\) ) | (?<! \\) ) (?! \\( | [[:alnum:]_./~@-] ) )"
-#define REGEX_FILE_PATH "(?x: (?(DEFINE) " FILE_PATH_PAREN_DEF " ) (?<![-[:alnum:]_./~@(]) (?: [[:alpha:]_][[:alnum:]_-]* \\( \\K " FILE_PATH_SLASHED " (?= \\) ) | \\( \\K " FILE_PATH_SLASHED " (?= \\) ) | \" (?: / | ~/ | \\.{1,2}/ ) [^[:cntrl:]\"]+ \" | ' (?: / | ~/ | \\.{1,2}/ ) [^[:cntrl:]']+ ' | " FILE_PATH_SLASHED " | \\. (?=" FILE_PATH_CHARS "*[[:alpha:]_]) " FILE_PATH_COMPONENT " | (?: Makefile | GNUmakefile | Dockerfile | Containerfile | Jenkinsfile | Procfile | README | LICENSE | CHANGELOG | Kconfig | configure | meson\\.build ) | (?=" FILE_PATH_CHARS "*[[:alpha:]_]) " FILE_PATH_COMPONENT_NONGREEDY " \\. " FILE_PATH_COMPONENT_NONGREEDY " ) " FILE_PATH_END " )"
+#define FILE_PATH_END "(?: (?= \\) ) | (?<! \\) ) (?! \\( | [[:alnum:]_./~@#-] ) )"
+#define REGEX_FILE_PATH "(?x: (?(DEFINE) " FILE_PATH_PAREN_DEF " ) (?<![-[:alnum:]_./~@#(]) (?: [[:alpha:]_][[:alnum:]_-]* \\( \\K " FILE_PATH_SLASHED " " FILE_PATH_FRAGMENT " (?= \\) ) | \\( \\K " FILE_PATH_SLASHED " " FILE_PATH_FRAGMENT " (?= \\) ) | \" (?: / | ~/ | \\.{1,2}/ ) [^[:cntrl:]\"]+ \" | ' (?: / | ~/ | \\.{1,2}/ ) [^[:cntrl:]']+ ' | " FILE_PATH_SLASHED " " FILE_PATH_FRAGMENT " | \\. (?=" FILE_PATH_CHARS "*[[:alpha:]_]) " FILE_PATH_COMPONENT " " FILE_PATH_FRAGMENT " | (?: Makefile | GNUmakefile | Dockerfile | Containerfile | Jenkinsfile | Procfile | README | LICENSE | CHANGELOG | Kconfig | configure | meson\\.build ) " FILE_PATH_FRAGMENT " | (?=" FILE_PATH_CHARS "*[[:alpha:]_]) " FILE_PATH_COMPONENT_NONGREEDY " \\. " FILE_PATH_COMPONENT_NONGREEDY " " FILE_PATH_FRAGMENT " ) " FILE_PATH_END " )"
 
 #endif /* !TERMINAL_REGEX_H */

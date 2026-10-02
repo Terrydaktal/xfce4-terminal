@@ -1890,6 +1890,43 @@ terminal_widget_get_current_directory_path (TerminalWidget *widget)
 
 
 static gchar *
+terminal_widget_existing_path_to_uri (const gchar *path)
+{
+  gchar *filename;
+  gchar *uri = NULL;
+
+  /* An existing filename containing '#' takes precedence over an anchor. */
+  if (g_file_test (path, G_FILE_TEST_EXISTS))
+    return g_filename_to_uri (path, NULL, NULL);
+  if (strchr (path, '#') == NULL)
+    return NULL;
+
+  filename = g_strdup (path);
+  for (gchar *fragment = strchr (filename, '#'); fragment != NULL;
+       fragment = strchr (fragment + 1, '#'))
+    {
+      *fragment = '\0';
+      if (g_file_test (filename, G_FILE_TEST_IS_REGULAR))
+        {
+          gchar *base_uri = g_filename_to_uri (filename, NULL, NULL);
+          *fragment = '#';
+          if (base_uri != NULL)
+            {
+              uri = g_strconcat (base_uri, fragment, NULL);
+              g_free (base_uri);
+            }
+          break;
+        }
+      *fragment = '#';
+    }
+
+  g_free (filename);
+  return uri;
+}
+
+
+
+static gchar *
 terminal_widget_selected_existing_path_uri (TerminalWidget *widget)
 {
   gchar *selection = NULL;
@@ -1935,7 +1972,7 @@ terminal_widget_selected_existing_path_uri (TerminalWidget *widget)
       if (filename != NULL
           && terminal_widget_link_clickable (candidate, PATTERN_TYPE_FILE)
           && g_file_test (filename, G_FILE_TEST_EXISTS))
-        uri = g_filename_to_uri (filename, NULL, NULL);
+        uri = g_strdup (candidate);
 
       g_free (filename);
       g_free (hostname);
@@ -1966,10 +2003,7 @@ terminal_widget_selected_existing_path_uri (TerminalWidget *widget)
     }
 
   if (path != NULL)
-    {
-      if (g_file_test (path, G_FILE_TEST_EXISTS))
-        uri = g_filename_to_uri (path, NULL, NULL);
-    }
+    uri = terminal_widget_existing_path_to_uri (path);
 
 out:
   g_free (path);
@@ -2142,9 +2176,13 @@ out:
   /* A hard newline after slash is indistinguishable from a visual wrap in
    * VTE's regex input. Do not turn such text into an Unearth query. */
   if (was_wrapped
-      && result != NULL
-      && !g_file_test (result, G_FILE_TEST_EXISTS))
-    g_clear_pointer (&result, g_free);
+      && result != NULL)
+    {
+      gchar *existing_uri = terminal_widget_existing_path_to_uri (result);
+      if (existing_uri == NULL)
+        g_clear_pointer (&result, g_free);
+      g_free (existing_uri);
+    }
 
   g_free (cwd_path);
   g_free (raw_candidate);
@@ -2610,15 +2648,9 @@ terminal_widget_open_path_candidate (TerminalWidget *widget,
   if (path == NULL)
     return FALSE;
 
-  if (g_file_test (path, G_FILE_TEST_EXISTS))
+  uri = terminal_widget_existing_path_to_uri (path);
+  if (uri != NULL)
     {
-      uri = g_filename_to_uri (path, NULL, NULL);
-      if (uri == NULL)
-        {
-          g_free (path);
-          return FALSE;
-        }
-
       terminal_widget_open_uri (widget, uri, PATTERN_TYPE_FILE, event_time);
       g_free (uri);
       g_free (path);
@@ -2650,15 +2682,9 @@ terminal_widget_open_parent_path_candidate (TerminalWidget *widget,
   if (path == NULL)
     return FALSE;
 
-  if (g_file_test (path, G_FILE_TEST_EXISTS))
+  uri = terminal_widget_existing_path_to_uri (path);
+  if (uri != NULL)
     {
-      uri = g_filename_to_uri (path, NULL, NULL);
-      if (uri == NULL)
-        {
-          g_free (path);
-          return FALSE;
-        }
-
       opened = terminal_widget_open_parent_selection_uri (widget, uri);
       g_free (uri);
       g_free (path);
@@ -3711,8 +3737,8 @@ terminal_widget_get_link (TerminalWidget *widget,
                   gchar *path_uri = NULL;
                   gboolean path_available = path != NULL;
 
-                  if (path != NULL && g_file_test (path, G_FILE_TEST_EXISTS))
-                    path_uri = g_filename_to_uri (path, NULL, NULL);
+                  if (path != NULL)
+                    path_uri = terminal_widget_existing_path_to_uri (path);
                   g_free (path);
                   if (path_uri != NULL)
                     {

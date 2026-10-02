@@ -34,7 +34,7 @@ wait_for_text (VteTerminal *terminal, const gchar *expected)
 }
 
 static void
-click_link (Fixture *fixture, guint modifiers)
+click_at (Fixture *fixture, guint modifiers, gdouble column, GdkEventType press)
 {
   GdkWindow *window = gtk_widget_get_window (fixture->widget);
   GList *children = gdk_window_get_children (window);
@@ -59,9 +59,15 @@ click_link (Fixture *fixture, guint modifiers)
       event->button.window = g_object_ref (window);
       event->button.button = 1;
       event->button.state = modifiers | (release ? GDK_BUTTON1_MASK : 0);
-      event->button.x = padding.left + 3.5 * vte_terminal_get_char_width (fixture->terminal);
+      event->button.x = padding.left + column * vte_terminal_get_char_width (fixture->terminal);
       event->button.y = padding.top + 0.5 * vte_terminal_get_char_height (fixture->terminal);
       gdk_event_set_device (event, pointer);
+      if (!release && press != GDK_BUTTON_PRESS)
+        {
+          gtk_widget_event (fixture->widget, event);
+          event->type = press;
+          event->button.state |= GDK_BUTTON1_MASK;
+        }
       gtk_widget_event (fixture->widget, event);
       gdk_event_free (event);
     }
@@ -94,6 +100,8 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   gchar *pane = g_build_filename (root, "pane", NULL);
   gchar *exports = g_build_filename (pane, "exports", NULL);
   gchar *parenthesized = g_build_filename (exports, "EXACT_ITEM_COUNT.html", NULL);
+  gchar *html = g_build_filename (exports, "VOLUME.html", NULL);
+  gchar *hash_filename = g_build_filename (exports, "VOLUME.html#combination_922", NULL);
   gchar *target = g_build_filename (pane, "link file.txt", NULL);
   gchar *plain = g_build_filename (pane, "source.txt", NULL);
   gchar *program = g_build_filename (root, "codex", NULL);
@@ -102,6 +110,10 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   gchar *quoted_self = g_shell_quote (self);
   gchar *command = g_strconcat (quoted_self, " --record-open", NULL);
   gchar *uri, *expected, *parent_uri, *escaped;
+  const gchar *selected_path;
+  gboolean has_fragment = strstr (kind, "fragment") != NULL;
+  gboolean literal_hash = strstr (kind, "hash-filename") != NULL;
+  gboolean selected = g_strcmp0 (kind, "selected-fragment") == 0;
   GAppInfo *handler;
   GError *error = NULL;
   pid_t child;
@@ -110,6 +122,9 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   g_assert_cmpint (g_mkdir (pane, 0700), ==, 0);
   g_assert_cmpint (g_mkdir (exports, 0700), ==, 0);
   g_assert_true (g_file_set_contents (parenthesized, "<!doctype html>\n", -1, NULL));
+  g_assert_true (g_file_set_contents (html, "<!doctype html><div id='combination_922'>test</div>\n", -1, NULL));
+  if (literal_hash)
+    g_assert_true (g_file_set_contents (hash_filename, "<!doctype html>literal hash filename\n", -1, NULL));
   g_assert_true (g_file_set_contents (target, "file for hyperlink test\n", -1, NULL));
   g_assert_true (g_file_set_contents (plain, "file for plain path test\n", -1, NULL));
   g_assert_cmpint (symlink (self, program), ==, 0);
@@ -147,6 +162,17 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
       _exit (127);
     }
   g_assert_true (wait_for_text (fixture->terminal, "LINK-READY"));
+  if (selected)
+    {
+      g_object_set (fixture->preferences, "misc-highlight-urls", FALSE,
+                    "misc-prefer-mouse-selection", TRUE, NULL);
+      vte_terminal_set_word_char_exceptions (fixture->terminal, "-./#_");
+      click_at (fixture, 0, 3.5, GDK_BUTTON_PRESS);
+      click_at (fixture, 0, 3.5, GDK_2BUTTON_PRESS);
+      gchar *text = vte_terminal_get_text_selected (fixture->terminal, VTE_FORMAT_TEXT);
+      g_assert_cmpstr (text, ==, "exports/VOLUME.html#combination_922");
+      g_free (text);
+    }
   if (g_strcmp0 (kind, "timeout") == 0)
     {
       gchar *args[] = { (gchar *) g_getenv ("TEST_TMUX"), "-N", "-S", socket,
@@ -168,11 +194,18 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
       g_assert_cmpint (foreground, ==, 0);
       g_assert_cmpint (elapsed, <, G_USEC_PER_SEC);
     }
-  uri = g_filename_to_uri (g_strcmp0 (kind, "osc8") == 0 ? target
-                           : g_strcmp0 (kind, "parenthesized") == 0 ? parenthesized : plain,
-                           NULL, NULL);
+  selected_path = has_fragment ? html : literal_hash ? hash_filename
+                  : g_strcmp0 (kind, "osc8") == 0 ? target
+                  : g_strcmp0 (kind, "parenthesized") == 0 ? parenthesized : plain;
+  uri = g_filename_to_uri (selected_path, NULL, NULL);
+  if (has_fragment)
+    {
+      gchar *anchored_uri = g_strconcat (uri, "#combination_922", NULL);
+      g_free (uri);
+      uri = anchored_uri;
+    }
   expected = g_strconcat ("open ", uri, NULL);
-  click_link (fixture, GDK_CONTROL_MASK);
+  click_at (fixture, GDK_CONTROL_MASK, selected ? 55.5 : 3.5, GDK_BUTTON_PRESS);
   if (g_strcmp0 (kind, "denied") == 0)
     {
       for (guint i = 0; i < 5; i++)
@@ -184,13 +217,12 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   g_free (expected);
   g_unlink (log);
 
-  parent_uri = g_filename_to_uri (g_strcmp0 (kind, "parenthesized") == 0 ? exports : pane,
+  parent_uri = g_filename_to_uri (has_fragment || literal_hash
+                                  || g_strcmp0 (kind, "parenthesized") == 0 ? exports : pane,
                                   NULL, NULL);
-  escaped = g_uri_escape_string (g_strcmp0 (kind, "osc8") == 0 ? target
-                                 : g_strcmp0 (kind, "parenthesized") == 0 ? parenthesized : plain,
-                                 "/", FALSE);
+  escaped = g_uri_escape_string (selected_path, "/", FALSE);
   expected = g_strdup_printf ("parent %s/?select=%s", parent_uri, escaped);
-  click_link (fixture, GDK_CONTROL_MASK | GDK_SHIFT_MASK);
+  click_at (fixture, GDK_CONTROL_MASK | GDK_SHIFT_MASK, selected ? 55.5 : 3.5, GDK_BUTTON_PRESS);
   expect_open (log, expected);
   g_free (escaped);
   g_free (parent_uri);
@@ -216,6 +248,8 @@ cleanup:
   g_free (plain);
   g_free (target);
   g_free (parenthesized);
+  g_free (hash_filename);
+  g_free (html);
   g_free (exports);
   g_free (pane);
   g_free (socket);
@@ -254,6 +288,25 @@ main (int argc, char **argv)
         output = g_strdup_printf ("\033[H\033[2J%s/source.txt\r\nLINK-READY", argv[2]);
       else if (g_strcmp0 (argv[3], "parenthesized") == 0)
         output = g_strdup ("\033[H\033[2J(exports/EXACT_ITEM_COUNT.html)\r\nLINK-READY");
+      else if (g_strcmp0 (argv[3], "osc8-fragment") == 0
+               || g_strcmp0 (argv[3], "osc8-hash-filename") == 0)
+        {
+          gchar *html_path = g_build_filename (argv[2], "exports",
+                                               g_strcmp0 (argv[3], "osc8-fragment") == 0
+                                                 ? "VOLUME.html" : "VOLUME.html#combination_922", NULL);
+          gchar *html_uri = g_filename_to_uri (html_path, NULL, NULL);
+          output = g_strdup_printf ("\033[H\033[2J\033]8;;%s%s\033\\HTML-LINK\033]8;;\033\\\r\nLINK-READY",
+                                    html_uri, g_strcmp0 (argv[3], "osc8-fragment") == 0 ? "#combination_922" : "");
+          g_free (html_uri);
+          g_free (html_path);
+        }
+      else if (g_strcmp0 (argv[3], "parenthesized-fragment") == 0
+               || g_strcmp0 (argv[3], "parenthesized-hash-filename") == 0)
+        output = g_strdup ("\033[H\033[2J(exports/VOLUME.html#combination_922)\r\nLINK-READY");
+      else if (g_strcmp0 (argv[3], "relative-fragment") == 0
+               || g_strcmp0 (argv[3], "selected-fragment") == 0
+               || g_strcmp0 (argv[3], "hash-filename") == 0)
+        output = g_strdup ("\033[H\033[2Jexports/VOLUME.html#combination_922\r\nLINK-READY");
       else
         output = g_strdup ("\033[H\033[2J./source.txt\r\nLINK-READY");
       write (1, output, strlen (output));
@@ -272,6 +325,13 @@ main (int argc, char **argv)
   g_test_add ("/links/tmux/absolute", Fixture, "absolute", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/relative", Fixture, "relative", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/parenthesized", Fixture, "parenthesized", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/relative-fragment", Fixture, "relative-fragment", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/parenthesized-fragment", Fixture, "parenthesized-fragment", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/selected-fragment", Fixture, "selected-fragment", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/osc8-fragment", Fixture, "osc8-fragment", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/hash-filename", Fixture, "hash-filename", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/parenthesized-hash-filename", Fixture, "parenthesized-hash-filename", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/osc8-hash-filename", Fixture, "osc8-hash-filename", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/denied", Fixture, "denied", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/timeout", Fixture, "timeout", setup, links_through_tmux, teardown);
   return g_test_run ();

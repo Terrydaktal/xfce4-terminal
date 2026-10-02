@@ -74,6 +74,35 @@ test_url_wrapping (void)
 }
 
 static void
+test_file_path_fragments (void)
+{
+  pcre2_code *code = compile_pattern (REGEX_FILE_PATH);
+  const gchar *cases[] = {
+    "exports/VOLUME.html#combination_922",
+    "(exports/VOLUME.html#combination_922)",
+    "Read(~/tasks/diet/exports/VOLUME.html#combination_922)",
+    "./VOLUME.html#combination_922",
+    "VOLUME.html#combination_922",
+    "(exports/VOLUME.html#section%20one)",
+  };
+
+  for (guint i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      PCRE2_SIZE start, end;
+      const gchar *path = strchr (cases[i], '(');
+      gsize offset = path != NULL ? path + 1 - cases[i] : 0;
+      gsize length = strlen (cases[i]);
+      if (cases[i][length - 1] == ')')
+        length--;
+      g_assert_cmpint (match (code, cases[i], &start, &end), >=, 0);
+      g_assert_cmpuint (start, ==, offset);
+      g_assert_cmpuint (end, ==, length);
+    }
+  g_assert_cmpint (match (code, "57216.795612#section", NULL, NULL), ==, PCRE2_ERROR_NOMATCH);
+  pcre2_code_free (code);
+}
+
+static void
 test_file_path_boundaries (void)
 {
   pcre2_code *code = compile_pattern (REGEX_FILE_PATH);
@@ -148,5 +177,6 @@ main (int argc,
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/regex/url/wrapped-boundary", test_url_wrapping);
   g_test_add_func ("/regex/path/boundaries", test_file_path_boundaries);
+  g_test_add_func ("/regex/path/fragments", test_file_path_fragments);
   return g_test_run ();
 }
