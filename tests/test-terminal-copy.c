@@ -1,4 +1,4 @@
-/* Exercise the real window's Copy accelerator, not only the VTE widget. */
+/* Exercise the real window's clipboard accelerators, not only the VTE widget. */
 #define _GNU_SOURCE
 
 #include <signal.h>
@@ -20,11 +20,15 @@ record_input (const gchar *path, gboolean mouse_reporting)
   gchar buffer[256];
   ssize_t count;
   int output;
+  int flags;
 
   if (tcgetattr (STDIN_FILENO, &attrs) != 0)
     return 1;
   cfmakeraw (&attrs);
   if (tcsetattr (STDIN_FILENO, TCSANOW, &attrs) != 0)
+    return 1;
+  flags = fcntl (STDIN_FILENO, F_GETFL);
+  if (flags < 0 || fcntl (STDIN_FILENO, F_SETFL, flags & ~O_NONBLOCK) < 0)
     return 1;
   output = open (path, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (output < 0)
@@ -89,6 +93,7 @@ setup_window (Fixture *fixture, gconstpointer mouse_reporting)
   g_assert_nonnull (fixture->widget);
   fixture->terminal = VTE_TERMINAL (fixture->widget);
   gtk_accel_map_change_entry ("<Actions>/terminal-window/copy", GDK_KEY_c, GDK_CONTROL_MASK, TRUE);
+  gtk_accel_map_change_entry ("<Actions>/terminal-window/paste", GDK_KEY_v, GDK_CONTROL_MASK, TRUE);
   gtk_widget_show (fixture->window);
   gtk_widget_grab_focus (fixture->widget);
   settle ();
@@ -112,7 +117,7 @@ setup_window (Fixture *fixture, gconstpointer mouse_reporting)
 }
 
 static void
-press_copy (Fixture *fixture)
+press_control_key (Fixture *fixture, guint keyval)
 {
   GdkEvent *event = gdk_event_new (GDK_KEY_PRESS);
   GdkDisplay *display = gtk_widget_get_display (fixture->widget);
@@ -120,9 +125,9 @@ press_copy (Fixture *fixture)
   gint count = 0;
 
   event->key.window = g_object_ref (gtk_widget_get_window (fixture->widget));
-  event->key.keyval = GDK_KEY_c;
+  event->key.keyval = keyval;
   event->key.state = GDK_CONTROL_MASK;
-  if (gdk_keymap_get_entries_for_keyval (gdk_keymap_get_for_display (display), GDK_KEY_c, &keys, &count)
+  if (gdk_keymap_get_entries_for_keyval (gdk_keymap_get_for_display (display), keyval, &keys, &count)
       && count > 0)
     {
       event->key.hardware_keycode = keys[0].keycode;
@@ -133,6 +138,12 @@ press_copy (Fixture *fixture)
   gtk_widget_event (fixture->window, event);
   gdk_event_free (event);
   settle ();
+}
+
+static void
+press_copy (Fixture *fixture)
+{
+  press_control_key (fixture, GDK_KEY_c);
 }
 
 static void
@@ -348,6 +359,157 @@ cleanup:
   g_free (binary);
 }
 
+typedef enum
+{
+  PASTE_DIRECT_IMAGE,
+  PASTE_TMUX_IMAGE,
+  PASTE_TMUX_TEXT,
+  PASTE_TMUX_OTHER_IMAGE,
+  PASTE_TMUX_INACTIVE_CODEX_IMAGE
+} PasteCase;
+
+static void
+setup_paste_window (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
+{
+  setup_window (fixture, NULL);
+}
+
+static void
+paste_to_application (Fixture *fixture, gconstpointer data)
+{
+  PasteCase test_case = GPOINTER_TO_INT (data);
+  GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
+  gboolean through_tmux = test_case != PASTE_DIRECT_IMAGE;
+  gboolean text_paste = test_case == PASTE_TMUX_TEXT;
+  gboolean no_input = test_case == PASTE_TMUX_OTHER_IMAGE
+                      || test_case == PASTE_TMUX_INACTIVE_CODEX_IMAGE;
+  gchar *binary = through_tmux ? g_find_program_in_path ("tmux") : NULL;
+  gchar *directory, *socket, *config, *recording, *agent, *contents, *inactive = NULL;
+  const gchar *expected = no_input ? "" : text_paste ? "normal clipboard text" : "\026";
+  const gchar *stop[] = { "kill-server", NULL };
+  GError *error = NULL;
+  gint64 deadline;
+  gsize length;
+  pid_t client;
+  int status;
+
+  if (through_tmux && binary == NULL)
+    {
+      g_test_skip ("tmux is unavailable");
+      return;
+    }
+  directory = g_dir_make_tmp ("xfce-terminal-paste-XXXXXX", &error);
+  g_assert_no_error (error);
+  socket = g_build_filename (directory, "server.sock", NULL);
+  config = g_build_filename (directory, "tmux.conf", NULL);
+  recording = g_build_filename (directory, "input", NULL);
+  agent = g_build_filename (directory, "codex", NULL);
+  /* Only the fake agent's argv name changes; it records raw PTY input. */
+  g_assert_cmpint (symlink (self, agent), ==, 0);
+  g_assert_true (g_file_set_contents (config,
+                                     "set -g status off\nset -s exit-unattached on\n"
+                                     "set -g destroy-unattached on\nset -s set-clipboard off\n",
+                                     -1, &error));
+  g_assert_no_error (error);
+  client = fork ();
+  g_assert_cmpint (client, >=, 0);
+  if (client == 0)
+    {
+      const gchar *program = test_case == PASTE_TMUX_OTHER_IMAGE ? self : agent;
+      if (setsid () < 0 || ioctl (fixture->slave, TIOCSCTTY, 0) < 0)
+        _exit (126);
+      for (int fd = STDIN_FILENO; fd <= STDERR_FILENO; fd++)
+        if (dup2 (fixture->slave, fd) < 0)
+          _exit (126);
+      if (through_tmux)
+        {
+          const gchar *argv[] = { binary, "-S", socket, "-f", config, "new-session", "-s", "paste-test",
+                                  "--", program, "--record", recording, "history", NULL };
+          execv (binary, (char *const *) argv);
+        }
+      else
+        {
+          const gchar *argv[] = { program, "--record", recording, "history", NULL };
+          execv (program, (char *const *) argv);
+        }
+      _exit (127);
+    }
+  deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
+  do
+    {
+      settle ();
+      contents = vte_terminal_get_text_format (fixture->terminal, VTE_FORMAT_TEXT);
+      gboolean ready = strstr (contents, "COPY-TEST-READY") != NULL;
+      g_free (contents);
+      if (ready)
+        break;
+    }
+  while (g_get_monotonic_time () < deadline);
+  g_assert_true (g_file_test (recording, G_FILE_TEST_EXISTS));
+
+  if (test_case == PASTE_TMUX_INACTIVE_CODEX_IMAGE)
+    {
+      /* A Codex process in another pane must not enable the fallback here. */
+      inactive = recording;
+      recording = g_build_filename (directory, "other-input", NULL);
+      const gchar *split[] = { "split-window", "-h", "-t", "=paste-test:.", "--",
+                               self, "--record", recording, "history", NULL };
+      g_free (tmux_command (binary, socket, split));
+      deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
+      do
+        settle ();
+      while (!g_file_test (recording, G_FILE_TEST_EXISTS) && g_get_monotonic_time () < deadline);
+      g_assert_true (g_file_test (recording, G_FILE_TEST_EXISTS));
+    }
+  if (text_paste)
+    gtk_clipboard_set_text (clipboard, expected, -1);
+  else
+    {
+      GdkPixbuf *image = gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8, 2, 2);
+      gdk_pixbuf_fill (image, 0xff0000ff);
+      gtk_clipboard_set_image (clipboard, image);
+      g_object_unref (image);
+      g_assert_null (gtk_clipboard_wait_for_text (clipboard));
+    }
+  press_control_key (fixture, GDK_KEY_v);
+  deadline = g_get_monotonic_time () + (no_input ? 250000 : G_USEC_PER_SEC);
+  do
+    {
+      settle ();
+      g_assert_true (g_file_get_contents (recording, &contents, &length, NULL));
+      gboolean done = length > 0 || g_get_monotonic_time () >= deadline;
+      if (done)
+        break;
+      g_free (contents);
+    }
+  while (TRUE);
+  /* Clean up the test's private processes even when the regression fails. */
+  if (through_tmux)
+    g_free (tmux_command (binary, socket, stop));
+  else
+    g_assert_cmpint (kill (client, SIGTERM), ==, 0);
+  while (waitpid (client, &status, 0) < 0 && errno == EINTR)
+    ;
+  if (inactive != NULL)
+    {
+      gchar *input;
+      g_assert_true (g_file_get_contents (inactive, &input, NULL, NULL));
+      g_assert_cmpstr (input, ==, "");
+      g_free (input);
+    }
+  gtk_clipboard_clear (clipboard);
+  remove_test_directory (directory);
+  g_free (directory);
+  g_free (socket);
+  g_free (config);
+  g_free (recording);
+  g_free (inactive);
+  g_free (agent);
+  g_free (binary);
+  g_assert_cmpmem (contents, length, expected, strlen (expected));
+  g_free (contents);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -379,6 +541,16 @@ main (int argc, char **argv)
               setup_window, copy_through_tmux, teardown);
   g_test_add ("/terminal/copy/tmux-query-timeout-does-not-interrupt", Fixture, GINT_TO_POINTER (3),
               setup_window, copy_through_tmux, teardown);
+  g_test_add ("/terminal/paste/direct-codex-image", Fixture, GINT_TO_POINTER (PASTE_DIRECT_IMAGE),
+              setup_paste_window, paste_to_application, teardown);
+  g_test_add ("/terminal/paste/tmux-codex-image", Fixture, GINT_TO_POINTER (PASTE_TMUX_IMAGE),
+              setup_paste_window, paste_to_application, teardown);
+  g_test_add ("/terminal/paste/tmux-codex-text", Fixture, GINT_TO_POINTER (PASTE_TMUX_TEXT),
+              setup_paste_window, paste_to_application, teardown);
+  g_test_add ("/terminal/paste/tmux-other-image", Fixture, GINT_TO_POINTER (PASTE_TMUX_OTHER_IMAGE),
+              setup_paste_window, paste_to_application, teardown);
+  g_test_add ("/terminal/paste/tmux-inactive-codex-image", Fixture, GINT_TO_POINTER (PASTE_TMUX_INACTIVE_CODEX_IMAGE),
+              setup_paste_window, paste_to_application, teardown);
   int result = g_test_run ();
   g_free (self);
   return result;

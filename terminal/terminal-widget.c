@@ -1127,7 +1127,27 @@ terminal_widget_foreground_application (TerminalWidget *widget)
 gboolean
 terminal_widget_foreground_process_is_codex (TerminalWidget *widget)
 {
-  return terminal_widget_foreground_application (widget) == TERMINAL_FOREGROUND_CODEX;
+  VtePty *pty = vte_terminal_get_pty (VTE_TERMINAL (widget));
+  TerminalForegroundApplication application;
+  pid_t pgrp;
+  gint fd;
+
+  if (!VTE_IS_PTY (pty) || (fd = vte_pty_get_fd (pty)) < 0)
+    return FALSE;
+  pgrp = tcgetpgrp (fd);
+  if (pgrp <= 0)
+    return FALSE;
+  application = terminal_widget_process_group_application (pgrp);
+  if (application == TERMINAL_FOREGROUND_TMUX)
+    {
+      /* Image-only paste must reach the agent in this client's active pane,
+       * not another pane or a Codex command mentioned in tmux's arguments.
+       * The existing resolver is bounded and fails closed on unknown clients. */
+      pgrp = terminal_tmux_pane_foreground_pid (pgrp);
+      application = pgrp > 0 ? terminal_widget_process_group_application (pgrp)
+                            : TERMINAL_FOREGROUND_OTHER;
+    }
+  return application == TERMINAL_FOREGROUND_CODEX;
 }
 
 gboolean
