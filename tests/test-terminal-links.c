@@ -33,9 +33,10 @@ wait_for_text (VteTerminal *terminal, const gchar *expected)
   return FALSE;
 }
 
-static void
-click_at (Fixture *fixture, guint modifiers, gdouble column, GdkEventType press)
+static GdkEvent *
+pointer_event_at (Fixture *fixture, GdkEventType type, guint modifiers, gdouble column, gdouble row)
 {
+  GdkEvent *event = gdk_event_new (type);
   GdkWindow *window = gtk_widget_get_window (fixture->widget);
   GList *children = gdk_window_get_children (window);
   GtkBorder padding;
@@ -53,15 +54,39 @@ click_at (Fixture *fixture, guint modifiers, gdouble column, GdkEventType press)
     }
   g_list_free (children);
   gtk_style_context_get_padding (gtk_widget_get_style_context (fixture->widget), GTK_STATE_FLAG_NORMAL, &padding);
+  event->any.window = g_object_ref (window);
+  if (type == GDK_ENTER_NOTIFY)
+    {
+      event->crossing.x = padding.left + column * vte_terminal_get_char_width (fixture->terminal);
+      event->crossing.y = padding.top + row * vte_terminal_get_char_height (fixture->terminal);
+      event->crossing.state = modifiers;
+      event->crossing.mode = GDK_CROSSING_NORMAL;
+      event->crossing.detail = GDK_NOTIFY_NONLINEAR;
+    }
+  else if (type == GDK_MOTION_NOTIFY)
+    {
+      event->motion.x = padding.left + column * vte_terminal_get_char_width (fixture->terminal);
+      event->motion.y = padding.top + row * vte_terminal_get_char_height (fixture->terminal);
+      event->motion.state = modifiers;
+    }
+  else
+    {
+      event->button.button = 1;
+      event->button.state = modifiers;
+      event->button.x = padding.left + column * vte_terminal_get_char_width (fixture->terminal);
+      event->button.y = padding.top + row * vte_terminal_get_char_height (fixture->terminal);
+    }
+  gdk_event_set_device (event, pointer);
+  return event;
+}
+
+static void
+click_position (Fixture *fixture, guint modifiers, gdouble column, gdouble row, GdkEventType press)
+{
   for (guint release = 0; release < 2; release++)
     {
-      GdkEvent *event = gdk_event_new (release ? GDK_BUTTON_RELEASE : GDK_BUTTON_PRESS);
-      event->button.window = g_object_ref (window);
-      event->button.button = 1;
-      event->button.state = modifiers | (release ? GDK_BUTTON1_MASK : 0);
-      event->button.x = padding.left + column * vte_terminal_get_char_width (fixture->terminal);
-      event->button.y = padding.top + 0.5 * vte_terminal_get_char_height (fixture->terminal);
-      gdk_event_set_device (event, pointer);
+      GdkEvent *event = pointer_event_at (fixture, release ? GDK_BUTTON_RELEASE : GDK_BUTTON_PRESS,
+                                         modifiers | (release ? GDK_BUTTON1_MASK : 0), column, row);
       if (!release && press != GDK_BUTTON_PRESS)
         {
           gtk_widget_event (fixture->widget, event);
@@ -71,6 +96,12 @@ click_at (Fixture *fixture, guint modifiers, gdouble column, GdkEventType press)
       gtk_widget_event (fixture->widget, event);
       gdk_event_free (event);
     }
+}
+
+static void
+click_at (Fixture *fixture, guint modifiers, gdouble column, GdkEventType press)
+{
+  click_position (fixture, modifiers, column, 0.5, press);
 }
 
 static void
@@ -114,6 +145,12 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   gboolean has_fragment = strstr (kind, "fragment") != NULL;
   gboolean literal_hash = strstr (kind, "hash-filename") != NULL;
   gboolean selected = g_strcmp0 (kind, "selected-fragment") == 0;
+  gboolean wrapped = g_str_has_prefix (kind, "wrapped-");
+  gboolean native = g_strcmp0 (kind, "wrapped-native") == 0;
+  gboolean separate = g_strcmp0 (kind, "wrapped-separate") == 0;
+  gboolean wrapped_osc8 = g_strcmp0 (kind, "wrapped-osc8") == 0;
+  gdouble click_column = wrapped ? separate ? 58.5 : 8.5 : selected ? 55.5 : 3.5;
+  gdouble click_row = wrapped ? 1.5 : 0.5;
   GAppInfo *handler;
   GError *error = NULL;
   pid_t child;
@@ -147,6 +184,12 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
                 "misc-hyperlink-file-manager", manager,
                 NULL);
 
+  if (wrapped)
+    {
+      gtk_window_resize (GTK_WINDOW (fixture->window), 1600, 240);
+      settle ();
+    }
+
   child = fork ();
   g_assert_cmpint (child, >=, 0);
   if (child == 0)
@@ -156,12 +199,52 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
       for (int fd = 0; fd <= 2; fd++)
         if (dup2 (fixture->slave, fd) < 0)
           _exit (126);
+      if (native)
+        {
+          /* Unlike tmux, the raw emitter does not reset inherited PTY flags. */
+          if (fcntl (0, F_SETFL, fcntl (0, F_GETFL) & ~O_NONBLOCK) < 0)
+            _exit (126);
+          execl (program, "codex", "--emit-links", pane, kind, NULL);
+          _exit (127);
+        }
       execl (g_getenv ("TEST_TMUX"), "tmux", "-S", socket,
              "new-session", "-A", "-s", "links", "--",
              program, "--emit-links", pane, kind, NULL);
       _exit (127);
     }
   g_assert_true (wait_for_text (fixture->terminal, "LINK-READY"));
+  if (wrapped && !g_str_has_suffix (kind, "-click"))
+    {
+      gboolean motion = g_strcmp0 (kind, "wrapped-motion") == 0;
+      GdkEvent *event = pointer_event_at (fixture, GDK_ENTER_NOTIFY, 0,
+                                         motion ? 150.5 : click_column, motion ? 3.5 : click_row);
+      gchar *match;
+      gchar *full_path = g_strdup_printf ("%s/\n    database/telegram_backup.fragments-v7.txt", pane);
+      gint tag;
+
+      /* No preceding query or hover over row zero may prime VTE's match cache. */
+      gtk_widget_event (fixture->widget, event);
+      gdk_event_free (event);
+      if (motion)
+        {
+          event = pointer_event_at (fixture, GDK_MOTION_NOTIFY, 0, click_column, click_row);
+          gtk_widget_event (fixture->widget, event);
+          gdk_event_free (event);
+        }
+      event = pointer_event_at (fixture, GDK_BUTTON_PRESS, 0, click_column, click_row);
+      match = wrapped_osc8 ? vte_terminal_hyperlink_check_event (fixture->terminal, event)
+                          : vte_terminal_match_check_event (fixture->terminal, event, &tag);
+      g_test_message ("bottom-first match: %s", match != NULL ? match : "(none)");
+      if (separate || wrapped_osc8)
+        {
+          g_free (full_path);
+          full_path = wrapped_osc8 ? g_filename_to_uri (plain, NULL, NULL) : g_strdup ("./source.txt");
+        }
+      g_assert_cmpstr (match, ==, full_path);
+      g_free (full_path);
+      g_free (match);
+      gdk_event_free (event);
+    }
   if (selected)
     {
       g_object_set (fixture->preferences, "misc-highlight-urls", FALSE,
@@ -197,6 +280,9 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   selected_path = has_fragment ? html : literal_hash ? hash_filename
                   : g_strcmp0 (kind, "osc8") == 0 ? target
                   : g_strcmp0 (kind, "parenthesized") == 0 ? parenthesized : plain;
+  gchar *wrapped_target = wrapped ? g_build_filename (pane, "database", "telegram_backup.fragments-v7.txt", NULL) : NULL;
+  if (wrapped && !separate && !wrapped_osc8)
+    selected_path = wrapped_target;
   uri = g_filename_to_uri (selected_path, NULL, NULL);
   if (has_fragment)
     {
@@ -205,7 +291,7 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
       uri = anchored_uri;
     }
   expected = g_strconcat ("open ", uri, NULL);
-  click_at (fixture, GDK_CONTROL_MASK, selected ? 55.5 : 3.5, GDK_BUTTON_PRESS);
+  click_position (fixture, GDK_CONTROL_MASK, click_column, click_row, GDK_BUTTON_PRESS);
   if (g_strcmp0 (kind, "denied") == 0)
     {
       for (guint i = 0; i < 5; i++)
@@ -217,12 +303,12 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   g_free (expected);
   g_unlink (log);
 
-  parent_uri = g_filename_to_uri (has_fragment || literal_hash
-                                  || g_strcmp0 (kind, "parenthesized") == 0 ? exports : pane,
-                                  NULL, NULL);
+  gchar *selected_parent = g_path_get_dirname (selected_path);
+  parent_uri = g_filename_to_uri (selected_parent, NULL, NULL);
+  g_free (selected_parent);
   escaped = g_uri_escape_string (selected_path, "/", FALSE);
   expected = g_strdup_printf ("parent %s/?select=%s", parent_uri, escaped);
-  click_at (fixture, GDK_CONTROL_MASK | GDK_SHIFT_MASK, selected ? 55.5 : 3.5, GDK_BUTTON_PRESS);
+  click_position (fixture, GDK_CONTROL_MASK | GDK_SHIFT_MASK, click_column, click_row, GDK_BUTTON_PRESS);
   expect_open (log, expected);
   g_free (escaped);
   g_free (parent_uri);
@@ -231,15 +317,21 @@ cleanup:
   {
     gchar *args[] = { (gchar *) g_getenv ("TEST_TMUX"), "-N", "-S", socket, "kill-server", NULL };
     gint status;
-    g_assert_true (g_spawn_sync (NULL, args, NULL, 0, NULL, NULL, NULL, NULL, &status, NULL));
-    g_assert_true (WIFEXITED (status));
-    g_assert_cmpint (WEXITSTATUS (status), ==, 0);
+    if (native)
+      g_assert_cmpint (kill (child, SIGTERM), ==, 0);
+    else
+      {
+        g_assert_true (g_spawn_sync (NULL, args, NULL, 0, NULL, NULL, NULL, NULL, &status, NULL));
+        g_assert_true (WIFEXITED (status));
+        g_assert_cmpint (WEXITSTATUS (status), ==, 0);
+      }
     g_assert_cmpint (waitpid (child, &status, 0), ==, child);
   }
   g_app_info_delete (handler);
   g_object_unref (handler);
   g_free (expected);
   g_free (uri);
+  g_free (wrapped_target);
   g_free (command);
   g_free (quoted_self);
   g_free (log);
@@ -286,6 +378,27 @@ main (int argc, char **argv)
         output = g_strdup_printf ("\033[H\033[2J\033]8;;%s\033\\FILE-LINK\033]8;;\033\\\r\nLINK-READY", uri);
       else if (g_strcmp0 (argv[3], "absolute") == 0)
         output = g_strdup_printf ("\033[H\033[2J%s/source.txt\r\nLINK-READY", argv[2]);
+      else if (g_str_has_prefix (argv[3], "wrapped-"))
+        {
+          gchar *directory = g_build_filename (argv[2], "database", NULL);
+          gchar *file = g_build_filename (directory, "telegram_backup.fragments-v7.txt", NULL);
+          if (g_mkdir (directory, 0700) != 0 || !g_file_set_contents (file, "test\n", -1, NULL))
+            return 1;
+          if (g_strcmp0 (argv[3], "wrapped-osc8") == 0)
+            {
+              gchar *plain_path = g_build_filename (argv[2], "source.txt", NULL);
+              gchar *tail_uri = g_filename_to_uri (plain_path, NULL, NULL);
+              g_free (plain_path);
+              output = g_strdup_printf ("\033[H\033[2JRepaired database (%s/\r\n    \033]8;;%s\033\\database/telegram_backup.fragments-v7.txt\033]8;;\033\\): enter this path in\r\nLINK-READY", argv[2], tail_uri);
+              g_free (tail_uri);
+            }
+          else
+            output = g_strdup_printf ("\033[H\033[2J%sRepaired database (%s/\r\n    database/telegram_backup.fragments-v7.txt): %s\r\nLINK-READY",
+                                      g_strcmp0 (argv[3], "wrapped-wide") == 0 ? "\xe7\x95\x8c" "e\xcc\x81 " : "",
+                                      argv[2], g_strcmp0 (argv[3], "wrapped-separate") == 0 ? "then ./source.txt" : "enter this path in");
+          g_free (file);
+          g_free (directory);
+        }
       else if (g_strcmp0 (argv[3], "parenthesized") == 0)
         output = g_strdup ("\033[H\033[2J(exports/EXACT_ITEM_COUNT.html)\r\nLINK-READY");
       else if (g_strcmp0 (argv[3], "osc8-fragment") == 0
@@ -325,6 +438,13 @@ main (int argc, char **argv)
   g_test_add ("/links/tmux/absolute", Fixture, "absolute", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/relative", Fixture, "relative", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/parenthesized", Fixture, "parenthesized", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-hover", Fixture, "wrapped-hover", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-click", Fixture, "wrapped-click", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-motion", Fixture, "wrapped-motion", setup, links_through_tmux, teardown);
+  g_test_add ("/links/native/wrapped-hover", Fixture, "wrapped-native", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-wide", Fixture, "wrapped-wide", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-osc8", Fixture, "wrapped-osc8", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-separate", Fixture, "wrapped-separate", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/relative-fragment", Fixture, "relative-fragment", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/parenthesized-fragment", Fixture, "parenthesized-fragment", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/selected-fragment", Fixture, "selected-fragment", setup, links_through_tmux, teardown);

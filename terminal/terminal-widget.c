@@ -134,6 +134,9 @@ terminal_widget_button_release_event (GtkWidget *widget,
 static gboolean
 terminal_widget_motion_notify_event (GtkWidget *widget,
                                      GdkEventMotion *event);
+static gboolean
+terminal_widget_enter_notify_event (GtkWidget *widget,
+                                    GdkEventCrossing *event);
 static void
 terminal_widget_drag_data_received (GtkWidget *widget,
                                     GdkDragContext *context,
@@ -265,6 +268,7 @@ struct _TerminalWidget
   TerminalPreferences *preferences;
   GtkAccelGroup *accel_group;
   gint regex_tags[G_N_ELEMENTS (regex_patterns)];
+  VteRegex *wrapped_path_row_regex;
   pcre2_code_8 *regex_pcre[G_N_ELEMENTS (regex_patterns)];
   TerminalUnearthSearch *unearth_search;
   TerminalMouseSelection mouse_selection;
@@ -369,6 +373,7 @@ terminal_widget_class_init (TerminalWidgetClass *klass)
   gtkwidget_class->button_press_event = terminal_widget_button_press_event;
   gtkwidget_class->button_release_event = terminal_widget_button_release_event;
   gtkwidget_class->motion_notify_event = terminal_widget_motion_notify_event;
+  gtkwidget_class->enter_notify_event = terminal_widget_enter_notify_event;
   gtkwidget_class->drag_data_received = terminal_widget_drag_data_received;
   gtkwidget_class->key_press_event = terminal_widget_key_press_event;
 
@@ -681,6 +686,8 @@ static void
 terminal_widget_dispose (GObject *object)
 {
   TerminalWidget *widget = TERMINAL_WIDGET (object);
+
+  g_clear_pointer (&widget->wrapped_path_row_regex, vte_regex_unref);
 
   if (widget->unearth_search != NULL)
     g_cancellable_cancel (widget->unearth_search->cancellable);
@@ -1387,6 +1394,126 @@ terminal_widget_shell_quote_input (const gchar *text)
     }
 
   return g_shell_quote (text);
+}
+
+
+
+static void
+terminal_widget_prime_wrapped_path (TerminalWidget *widget, GdkEvent *event)
+{
+  VteTerminal *terminal = VTE_TERMINAL (widget);
+  GtkWidget *gtk_widget = GTK_WIDGET (widget);
+  GtkWidgetClass *parent = GTK_WIDGET_CLASS (terminal_widget_parent_class);
+  GtkBorder padding;
+  GdkEvent *probe, *crossing;
+  gchar *match, *text;
+  gdouble x, y, scroll, previous_y;
+  glong columns, cell_width, cell_height, column = 0;
+  gint tag = -1, ambiguous_width;
+  gboolean enabled = FALSE;
+
+  for (guint i = 0; i < G_N_ELEMENTS (regex_patterns); i++)
+    if (regex_patterns[i].type == PATTERN_TYPE_PATH && widget->regex_tags[i] != -1)
+      enabled = TRUE;
+  if (!enabled || parent->enter_notify_event == NULL
+      || !gdk_event_get_coords (event, &x, &y))
+    return;
+
+  gtk_style_context_get_padding (gtk_widget_get_style_context (gtk_widget), GTK_STATE_FLAG_NORMAL, &padding);
+  columns = vte_terminal_get_column_count (terminal);
+  cell_width = vte_terminal_get_char_width (terminal);
+  cell_height = vte_terminal_get_char_height (terminal);
+  if (columns <= 0 || columns > 4096 || cell_width <= 0 || cell_height <= 0
+      || x < padding.left || x >= padding.left + columns * cell_width
+      || y < padding.top || y >= gtk_widget_get_allocated_height (gtk_widget) - padding.bottom)
+    return;
+
+  probe = gdk_event_new (GDK_BUTTON_PRESS);
+  probe->button.window = g_object_ref (event->any.window);
+  probe->button.x = x;
+  probe->button.y = y;
+  gdk_event_set_device (probe, gdk_event_get_device (event));
+  match = vte_terminal_hyperlink_check_event (terminal, probe);
+  if (match != NULL)
+    goto out;
+  match = vte_terminal_match_check_event (terminal, probe, &tag);
+  if (match == NULL || !terminal_widget_regex_tag_is_path (widget, tag)
+      || strchr (match, '\n') != NULL)
+    goto out;
+  g_clear_pointer (&match, g_free);
+
+  scroll = gtk_adjustment_get_value (gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (widget)));
+#if VTE_CHECK_VERSION(0, 66, 0)
+  if (!vte_terminal_get_scroll_unit_is_pixels (terminal))
+#endif
+    scroll *= cell_height;
+  scroll = (glong) (MAX (scroll, 0) + 0.5) % cell_height;
+  previous_y = padding.top + ((glong) ((y - padding.top + scroll) / cell_height) - 0.5) * cell_height - scroll;
+  if (previous_y + cell_height / 2.0 <= padding.top)
+    goto out;
+  previous_y = MAX (previous_y, padding.top);
+
+  /* VTE searches forwards from the hovered row. Check just the preceding
+   * row for a slash continuation; never copy the scrollback. */
+  if (widget->wrapped_path_row_regex == NULL)
+    widget->wrapped_path_row_regex = vte_regex_new_for_match ("[^\\r\\n]+", -1, PCRE2_UTF | PCRE2_MULTILINE, NULL);
+  if (widget->wrapped_path_row_regex == NULL)
+    goto out;
+  probe->button.x = padding.left + 0.5 * cell_width;
+  probe->button.y = previous_y;
+  text = NULL;
+  vte_terminal_event_check_regex_simple (terminal, probe, &widget->wrapped_path_row_regex, 1, 0, &text);
+  if (text == NULL || strlen (text) > 4096)
+    {
+      g_free (text);
+      goto out;
+    }
+  g_strchomp (text);
+  enabled = g_str_has_suffix (text, "/");
+  if (!enabled)
+    {
+      g_free (text);
+      goto out;
+    }
+
+  /* Use displayed text instead of absolute ring row numbers: recent VTE
+   * versions make scrollbar values relative to the retained history. */
+  ambiguous_width = vte_terminal_get_cjk_ambiguous_width (terminal);
+  for (const gchar *p = text; *p != '\0'; p = g_utf8_next_char (p))
+    {
+      gunichar c = g_utf8_get_char (p);
+      if (!g_unichar_iszerowidth (c))
+        column += (ambiguous_width == 2
+                     ? g_unichar_iswide_cjk (c) : g_unichar_iswide (c)) ? 2 : 1;
+    }
+  g_free (text);
+  probe->button.x = padding.left + ((column - 1) % columns + 0.5) * cell_width;
+  match = vte_terminal_match_check_event (terminal, probe, &tag);
+  if (match == NULL || !terminal_widget_regex_tag_is_path (widget, tag)
+      || strchr (match, '\n') == NULL)
+    goto out;
+
+  /* Crossing events update VTE's underline cache without sending synthetic
+   * mouse reports to the child. Restore the real pointer position afterwards;
+   * VTE retains the full span only if it contains that position. */
+  crossing = gdk_event_new (GDK_ENTER_NOTIFY);
+  crossing->crossing.window = g_object_ref (event->any.window);
+  crossing->crossing.time = gdk_event_get_time (event);
+  crossing->crossing.mode = GDK_CROSSING_NORMAL;
+  crossing->crossing.detail = GDK_NOTIFY_NONLINEAR;
+  gdk_event_get_state (event, &crossing->crossing.state);
+  gdk_event_set_device (crossing, gdk_event_get_device (event));
+  crossing->crossing.x = probe->button.x;
+  crossing->crossing.y = probe->button.y;
+  parent->enter_notify_event (gtk_widget, &crossing->crossing);
+  crossing->crossing.x = x;
+  crossing->crossing.y = y;
+  parent->enter_notify_event (gtk_widget, &crossing->crossing);
+  gdk_event_free (crossing);
+
+out:
+  g_free (match);
+  gdk_event_free (probe);
 }
 
 
@@ -2756,12 +2883,25 @@ terminal_widget_button_release_event (GtkWidget *widget,
 
 
 static gboolean
+terminal_widget_enter_notify_event (GtkWidget *widget,
+                                    GdkEventCrossing *event)
+{
+  terminal_widget_prime_wrapped_path (TERMINAL_WIDGET (widget), (GdkEvent *) event);
+  return GTK_WIDGET_CLASS (terminal_widget_parent_class)->enter_notify_event (widget, event);
+}
+
+
+
+static gboolean
 terminal_widget_motion_notify_event (GtkWidget *widget,
                                      GdkEventMotion *event)
 {
   TerminalWidget *terminal_widget = TERMINAL_WIDGET (widget);
   GdkEvent *forwarded;
   gboolean handled;
+
+  if (!(event->state & (GDK_BUTTON1_MASK | GDK_BUTTON2_MASK | GDK_BUTTON3_MASK)))
+    terminal_widget_prime_wrapped_path (terminal_widget, (GdkEvent *) event);
 
   if ((event->state & GDK_BUTTON1_MASK) && terminal_widget->link_selection_drag_pending)
     {
@@ -2805,6 +2945,8 @@ terminal_widget_button_press_event (GtkWidget *widget,
   guint open_modifier = 0;
   guint signal_id = 0;
   GdkEvent *forwarded = NULL;
+
+  terminal_widget_prime_wrapped_path (terminal_widget, (GdkEvent *) event);
 
   if (event->type == GDK_BUTTON_PRESS && event->button == 1)
     {
@@ -3744,6 +3886,7 @@ terminal_widget_get_link (TerminalWidget *widget,
     }
 
   /* check if we have a regex match */
+  terminal_widget_prime_wrapped_path (widget, event);
   if ((uri = vte_terminal_match_check_event (VTE_TERMINAL (widget), event, &tag)) != NULL)
     {
       for (i = 0; i < G_N_ELEMENTS (regex_patterns); i++)
