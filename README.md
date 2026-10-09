@@ -45,7 +45,12 @@ provides these options.
 
 VTE does not retain the process that originally emitted screen content, so the
 foreground-process allowlist is evaluated at click time rather than against
-the historical producer of a line.
+the historical producer of a line. The check includes processes in the same
+foreground job, so Bash-wrapped agents work without allowing every Bash job.
+Background jobs and other tmux panes cannot enable the active job. The traversal
+has a 50 ms fail-closed budget and does not run during output, ordinary typing
+or pointer movement. VTE's regex underlining is independent of this click-time
+policy.
 
 For local tmux clients launched with an explicit absolute `-S` socket (including
 tmux-simple), path resolution now follows that client's active pane. A bounded

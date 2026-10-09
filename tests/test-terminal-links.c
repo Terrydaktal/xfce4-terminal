@@ -135,7 +135,16 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   gchar *hash_filename = g_build_filename (exports, "VOLUME.html#combination_922", NULL);
   gchar *target = g_build_filename (pane, "link file.txt", NULL);
   gchar *plain = g_build_filename (pane, "source.txt", NULL);
-  gchar *program = g_build_filename (root, "codex", NULL);
+  gboolean pi = g_str_has_prefix (kind, "pi-");
+  gboolean wrapper = g_str_has_prefix (kind, "pi-wrapper");
+  gboolean background = g_strcmp0 (kind, "pi-background-denied") == 0;
+  gboolean argument = g_strcmp0 (kind, "pi-argument-denied") == 0;
+  gboolean other_pane = g_strcmp0 (kind, "pi-other-pane-denied") == 0;
+  gboolean denied = g_strcmp0 (kind, "denied") == 0 || g_str_has_suffix (kind, "-denied");
+  gboolean osc8 = g_strcmp0 (kind, "osc8") == 0;
+  gchar *program = g_build_filename (root, pi ? "pi" : "codex", NULL);
+  gchar *other = g_build_filename (root, "nano", NULL);
+  gchar *background_ready = g_build_filename (root, "background-ready", NULL);
   gchar *manager = g_build_filename (root, "link-manager", NULL);
   gchar *log = g_build_filename (root, "opened", NULL);
   gchar *quoted_self = g_shell_quote (self);
@@ -149,14 +158,20 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   gboolean hyphen = g_str_has_prefix (kind, "wrapped-hyphen-");
   gboolean hyphen_top = g_strcmp0 (kind, "wrapped-hyphen-top") == 0;
   gboolean native = g_strcmp0 (kind, "wrapped-native") == 0
-                    || g_strcmp0 (kind, "wrapped-hyphen-native") == 0;
+                    || g_strcmp0 (kind, "wrapped-hyphen-native") == 0
+                    || g_strcmp0 (kind, "pi-wrapper-native") == 0;
   gboolean separate = g_strcmp0 (kind, "wrapped-separate") == 0;
   gboolean wrapped_osc8 = g_strcmp0 (kind, "wrapped-osc8") == 0;
-  gdouble click_column = hyphen_top ? 113.5 : wrapped ? separate ? 58.5 : 8.5 : selected ? 55.5 : 3.5;
+  gdouble click_column = pi ? 10.5 : hyphen_top ? 113.5 : wrapped ? separate ? 58.5 : 8.5 : selected ? 55.5 : 3.5;
   gdouble click_row = wrapped && !hyphen_top ? 1.5 : 0.5;
   GAppInfo *handler;
   GError *error = NULL;
   pid_t child;
+  pid_t background_child = 0;
+  const gchar *allowlist = pi ? "pi" : "codex";
+
+  if (g_strcmp0 (kind, "denied") == 0 || g_strcmp0 (kind, "pi-wrapper-denied") == 0)
+    allowlist = "not-allowed";
 
   g_assert_nonnull (g_getenv ("TEST_TMUX"));
   g_assert_cmpint (g_mkdir (pane, 0700), ==, 0);
@@ -168,6 +183,8 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   g_assert_true (g_file_set_contents (target, "file for hyperlink test\n", -1, NULL));
   g_assert_true (g_file_set_contents (plain, "file for plain path test\n", -1, NULL));
   g_assert_cmpint (symlink (self, program), ==, 0);
+  if (g_strcmp0 (program, other) != 0)
+    g_assert_cmpint (symlink (self, other), ==, 0);
   g_assert_cmpint (symlink (self, manager), ==, 0);
   g_setenv ("LINK_OPEN_LOG", log, TRUE);
   handler = g_app_info_create_from_commandline (command, "Hyperlink test recorder",
@@ -179,11 +196,13 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   g_assert_no_error (error);
   g_assert_true (g_app_info_set_as_default_for_type (handler, "application/json", &error));
   g_assert_no_error (error);
+  g_assert_true (g_app_info_set_as_default_for_type (handler, "application/vnd.sqlite3", &error));
+  g_assert_no_error (error);
   g_object_set (fixture->preferences,
                 "misc-prefer-mouse-selection", FALSE,
                 "misc-highlight-urls", TRUE,
                 "misc-auto-detect-file-paths", TRUE,
-                "misc-auto-detect-file-path-apps", g_strcmp0 (kind, "denied") == 0 ? "not-codex" : "codex",
+                "misc-auto-detect-file-path-apps", allowlist,
                 "misc-hyperlink-open-button", 1u,
                 "misc-hyperlink-open-modifier", (guint) GDK_CONTROL_MASK,
                 "misc-hyperlink-file-manager", manager,
@@ -193,6 +212,24 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
     {
       gtk_window_resize (GTK_WINDOW (fixture->window), 1600, 240);
       settle ();
+    }
+
+  if (background)
+    {
+      background_child = fork ();
+      g_assert_cmpint (background_child, >=, 0);
+      if (background_child == 0)
+        {
+          if (setsid () < 0)
+            _exit (126);
+          execl (program, "pi", "--wait", background_ready, NULL);
+          _exit (127);
+        }
+      gint64 deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
+      while (!g_file_test (background_ready, G_FILE_TEST_EXISTS)
+             && g_get_monotonic_time () < deadline)
+        settle ();
+      g_assert_true (g_file_test (background_ready, G_FILE_TEST_EXISTS));
     }
 
   child = fork ();
@@ -209,15 +246,65 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
           /* Unlike tmux, the raw emitter does not reset inherited PTY flags. */
           if (fcntl (0, F_SETFL, fcntl (0, F_GETFL) & ~O_NONBLOCK) < 0)
             _exit (126);
+          if (wrapper)
+            {
+              if (chdir (pane) < 0)
+                _exit (126);
+              execl ("/bin/bash", "bash", "--noprofile", "--norc", "-c", "exec 3<&0; \"$@\" <&3 & wait",
+                     "bash", program, "--emit-links", pane, kind, NULL);
+              _exit (127);
+            }
           execl (program, "codex", "--emit-links", pane, kind, NULL);
+          _exit (127);
+        }
+      if (wrapper)
+        {
+          execl (g_getenv ("TEST_TMUX"), "tmux", "-S", socket,
+                 "new-session", "-A", "-s", "links", "--",
+                 "/bin/bash", "--noprofile", "--norc", "-c", "cd -- \"$1\" || exit; shift; exec 3<&0; \"$@\" <&3 & wait",
+                 "bash", pane, program, "--emit-links", pane, kind, NULL);
           _exit (127);
         }
       execl (g_getenv ("TEST_TMUX"), "tmux", "-S", socket,
              "new-session", "-A", "-s", "links", "--",
-             program, "--emit-links", pane, kind, NULL);
+             background || argument ? other : program, "--emit-links", pane, kind,
+             argument ? "pi" : NULL, NULL);
       _exit (127);
     }
   g_assert_true (wait_for_text (fixture->terminal, "LINK-READY"));
+  if (wrapper)
+    {
+      pid_t group = native ? tcgetpgrp (vte_pty_get_fd (vte_terminal_get_pty (fixture->terminal)))
+                           : terminal_tmux_pane_foreground_pid (child);
+      gchar *path = g_strdup_printf ("/proc/%d/comm", (gint) group);
+      gchar *comm = NULL;
+      g_assert_true (g_file_get_contents (path, &comm, NULL, NULL));
+      g_assert_cmpstr (g_strchomp (comm), ==, "bash");
+      g_free (comm);
+      g_free (path);
+    }
+  if (other_pane)
+    {
+      gchar *args[] = { (gchar *) g_getenv ("TEST_TMUX"), "-N", "-S", socket, "new-window", "-t", "links",
+                        other, "--emit-links", pane, "pi-inactive", NULL };
+      gint status;
+      g_assert_true (g_spawn_sync (NULL, args, NULL, 0, NULL, NULL, NULL, NULL, &status, NULL));
+      g_assert_true (WIFEXITED (status));
+      g_assert_cmpint (WEXITSTATUS (status), ==, 0);
+      g_assert_true (wait_for_text (fixture->terminal, "OTHER-PANE-READY"));
+    }
+  if (pi)
+    {
+      GdkEvent *event = pointer_event_at (fixture, GDK_BUTTON_PRESS, 0, click_column, click_row);
+      gint tag;
+      gchar *match = vte_terminal_match_check_event (fixture->terminal, event, &tag);
+      g_assert_nonnull (match);
+      g_assert_nonnull (strstr (match, "beauty_terms.db"));
+      g_free (match);
+      gdk_event_free (event);
+      if (background)
+        g_assert_cmpint (getpgid (background_child), !=, terminal_tmux_pane_foreground_pid (child));
+    }
   if (wrapped && !g_str_has_suffix (kind, "-click"))
     {
       gboolean motion = g_strcmp0 (kind, "wrapped-motion") == 0;
@@ -284,8 +371,11 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
       g_assert_cmpint (elapsed, <, G_USEC_PER_SEC);
     }
   selected_path = has_fragment ? html : literal_hash ? hash_filename
-                  : g_strcmp0 (kind, "osc8") == 0 ? target
+                  : osc8 ? target
                   : g_strcmp0 (kind, "parenthesized") == 0 ? parenthesized : plain;
+  gchar *database = pi ? g_build_filename (pane, "beauty_terms.db", NULL) : NULL;
+  if (pi)
+    selected_path = database;
   gchar *wrapped_target = wrapped ? g_build_filename (pane, "database", "telegram_backup.fragments-v7.txt", NULL) : NULL;
   if (hyphen)
     {
@@ -303,8 +393,12 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
     }
   expected = g_strconcat ("open ", uri, NULL);
   click_position (fixture, GDK_CONTROL_MASK, click_column, click_row, GDK_BUTTON_PRESS);
-  if (g_strcmp0 (kind, "denied") == 0)
+  if (denied)
     {
+      for (guint i = 0; i < 5; i++)
+        settle ();
+      g_assert_false (g_file_test (log, G_FILE_TEST_EXISTS));
+      click_position (fixture, GDK_CONTROL_MASK | GDK_SHIFT_MASK, click_column, click_row, GDK_BUTTON_PRESS);
       for (guint i = 0; i < 5; i++)
         settle ();
       g_assert_false (g_file_test (log, G_FILE_TEST_EXISTS));
@@ -337,17 +431,25 @@ cleanup:
         g_assert_cmpint (WEXITSTATUS (status), ==, 0);
       }
     g_assert_cmpint (waitpid (child, &status, 0), ==, child);
+    if (background_child > 0)
+      {
+        g_assert_cmpint (kill (background_child, SIGTERM), ==, 0);
+        g_assert_cmpint (waitpid (background_child, &status, 0), ==, background_child);
+      }
   }
   g_app_info_delete (handler);
   g_object_unref (handler);
   g_free (expected);
   g_free (uri);
   g_free (wrapped_target);
+  g_free (database);
   g_free (command);
   g_free (quoted_self);
   g_free (log);
   g_free (manager);
   g_free (program);
+  g_free (other);
+  g_free (background_ready);
   g_free (plain);
   g_free (target);
   g_free (parenthesized);
@@ -363,6 +465,13 @@ cleanup:
 int
 main (int argc, char **argv)
 {
+  if (argc == 3 && g_strcmp0 (argv[1], "--wait") == 0)
+    {
+      if (!g_file_set_contents (argv[2], "ready", -1, NULL))
+        return 1;
+      while (TRUE)
+        pause ();
+    }
   if (argc == 3 && g_strcmp0 (argv[1], "--record-open") == 0)
     {
       gchar *uri = g_path_is_absolute (argv[2]) ? g_filename_to_uri (argv[2], NULL, NULL) : g_strdup (argv[2]);
@@ -374,7 +483,7 @@ main (int argc, char **argv)
       gchar *text = g_strconcat ("parent ", argv[1], NULL);
       return g_file_set_contents (g_getenv ("LINK_OPEN_LOG"), text, -1, NULL) ? 0 : 1;
     }
-  if (argc == 4 && g_strcmp0 (argv[1], "--emit-links") == 0)
+  if (argc >= 4 && g_strcmp0 (argv[1], "--emit-links") == 0)
     {
       struct termios attrs;
       gchar *path, *uri, *output;
@@ -387,6 +496,15 @@ main (int argc, char **argv)
       uri = g_filename_to_uri (path, NULL, NULL);
       if (g_strcmp0 (argv[3], "osc8") == 0)
         output = g_strdup_printf ("\033[H\033[2J\033]8;;%s\033\\FILE-LINK\033]8;;\033\\\r\nLINK-READY", uri);
+      else if (g_str_has_prefix (argv[3], "pi-"))
+        {
+          gchar *database = g_build_filename (argv[2], "beauty_terms.db", NULL);
+          if (!g_file_set_contents (database, "SQLite format 3\0", 16, NULL))
+            return 1;
+          output = g_strdup_printf ("\033[H\033[2JSource: %s. Want a full per-term count list?\r\n%s",
+                                    database, g_strcmp0 (argv[3], "pi-inactive") == 0 ? "OTHER-PANE-READY" : "LINK-READY");
+          g_free (database);
+        }
       else if (g_strcmp0 (argv[3], "absolute") == 0)
         output = g_strdup_printf ("\033[H\033[2J%s/source.txt\r\nLINK-READY", argv[2]);
       else if (g_str_has_prefix (argv[3], "wrapped-hyphen-"))
@@ -479,5 +597,11 @@ main (int argc, char **argv)
   g_test_add ("/links/tmux/osc8-hash-filename", Fixture, "osc8-hash-filename", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/denied", Fixture, "denied", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/timeout", Fixture, "timeout", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/pi-wrapper", Fixture, "pi-wrapper", setup, links_through_tmux, teardown);
+  g_test_add ("/links/native/pi-wrapper", Fixture, "pi-wrapper-native", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/pi-wrapper-denied", Fixture, "pi-wrapper-denied", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/pi-background-denied", Fixture, "pi-background-denied", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/pi-argument-denied", Fixture, "pi-argument-denied", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/pi-other-pane-denied", Fixture, "pi-other-pane-denied", setup, links_through_tmux, teardown);
   return g_test_run ();
 }

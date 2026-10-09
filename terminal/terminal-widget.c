@@ -1307,6 +1307,58 @@ terminal_widget_process_matches_allowlist (pid_t pid,
 
 
 static gboolean
+terminal_widget_process_group_allows_path_detection (pid_t pgrp,
+                                                     const gchar *allowlist)
+{
+  GDir *proc_dir;
+  const gchar *entry;
+  gint64 deadline;
+  gboolean matches;
+
+  if (pgrp <= 0 || allowlist == NULL || *allowlist == '\0')
+    return FALSE;
+
+  matches = terminal_widget_process_matches_allowlist (pgrp, allowlist);
+  if (matches)
+    return TRUE;
+
+  /* A wrapper may own the foreground job while the application is another
+   * member. Never search other jobs or inactive tmux panes.
+   * This traversal runs only for path actions, with a fail-closed time budget. */
+  proc_dir = g_dir_open ("/proc", 0, NULL);
+  if (proc_dir == NULL)
+    return FALSE;
+  deadline = g_get_monotonic_time () + 50 * 1000;
+  while ((entry = g_dir_read_name (proc_dir)) != NULL)
+    {
+      gchar *end = NULL;
+      gint64 value;
+      pid_t pid;
+
+      if (g_get_monotonic_time () >= deadline)
+        {
+          matches = FALSE;
+          break;
+        }
+      value = g_ascii_strtoll (entry, &end, 10);
+      if (*entry == '\0' || end == NULL || *end != '\0' || value <= 0 || value > G_MAXINT)
+        continue;
+      pid = (pid_t) value;
+      if (pid == pgrp || getpgid (pid) != pgrp)
+        continue;
+      if (!matches && terminal_widget_process_matches_allowlist (pid, allowlist)
+          && getpgid (pid) == pgrp)
+        matches = TRUE;
+      if (matches)
+        break;
+    }
+  g_dir_close (proc_dir);
+  return matches;
+}
+
+
+
+static gboolean
 terminal_widget_foreground_process_allows_path_detection (TerminalWidget *widget)
 {
   VtePty *pty;
@@ -1339,7 +1391,7 @@ terminal_widget_foreground_process_allows_path_detection (TerminalWidget *widget
   pgrp = pty_fd >= 0 ? tcgetpgrp (pty_fd) : -1;
   if (pgrp > 0 && terminal_widget_process_application (pgrp) == TERMINAL_FOREGROUND_TMUX)
     pgrp = terminal_tmux_pane_foreground_pid (pgrp);
-  matches = pgrp > 0 && terminal_widget_process_matches_allowlist (pgrp, allowlist);
+  matches = terminal_widget_process_group_allows_path_detection (pgrp, allowlist);
   g_free (allowlist);
   return matches;
 }
