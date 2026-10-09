@@ -103,6 +103,32 @@ test_file_path_fragments (void)
 }
 
 static void
+test_file_path_hyphen_wrapping (void)
+{
+  pcre2_code *code = compile_pattern (REGEX_FILE_PATH);
+  const struct { const gchar *text; const gchar *prefix; gsize suffix; } cases[] = {
+    { "Audit results (artifacts/anatomy-\n  tree-toggle-audit/verification-summary.json).", "Audit results (", 2 },
+    { "Read(~/artifacts/anatomy-\r\n    tree-toggle-audit/verification-summary.json)", "Read(", 1 },
+    { "/tmp/artifacts/anatomy-\ntree-toggle-audit/verification-summary.json", "", 0 },
+  };
+  PCRE2_SIZE start, end;
+
+  for (guint i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      g_assert_cmpint (match (code, cases[i].text, &start, &end), >=, 0);
+      g_assert_cmpuint (start, ==, strlen (cases[i].prefix));
+      g_assert_cmpuint (end, ==, strlen (cases[i].text) - cases[i].suffix);
+    }
+
+  /* Hyphenated prose and blank paragraphs must not become one path. */
+  g_assert_cmpint (match (code, "message-\n  next.json", &start, &end), >=, 0);
+  g_assert_cmpuint (start, ==, strlen ("message-\n  "));
+  g_assert_cmpint (match (code, "artifacts/anatomy-\n\n  tree-toggle-audit/summary.json", &start, &end), >=, 0);
+  g_assert_cmpuint (end, ==, strlen ("artifacts/anatomy-"));
+  pcre2_code_free (code);
+}
+
+static void
 test_file_path_boundaries (void)
 {
   pcre2_code *code = compile_pattern (REGEX_FILE_PATH);
@@ -177,6 +203,7 @@ main (int argc,
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/regex/url/wrapped-boundary", test_url_wrapping);
   g_test_add_func ("/regex/path/boundaries", test_file_path_boundaries);
+  g_test_add_func ("/regex/path/hyphen-wrapping", test_file_path_hyphen_wrapping);
   g_test_add_func ("/regex/path/fragments", test_file_path_fragments);
   return g_test_run ();
 }

@@ -161,17 +161,18 @@
  * with spaces must be quoted or supplied as OSC 8 hyperlinks; accepting
  * unquoted spaces would merge paths with following command arguments.
  *
- * VTE exposes a visual row boundary as a newline to match regexes. Only allow
- * one inside an unquoted path immediately after '/', where removing it cannot
- * concatenate two path components. Indentation after the newline is accepted
- * because wrapped terminal text can be copied with leading spaces.
+ * Accept a row boundary after '/' or a hyphen inside a slashed path. Keep the
+ * hyphen: applications can wrap at it without inserting a new path character.
+ * Bare filenames do not get the hyphen-wrap rule, to avoid joining prose.
+ * Wrapped candidates must resolve to an existing path before they are opened.
  */
 #define FILE_PATH_CHARS "[-[:alnum:]_~.+@]"
 #define FILE_PATH_PAREN_DEF "(?<FILE_PATH_PAREN>\\( (?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) )* \\) )"
 #define FILE_PATH_COMPONENT "(?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) )+"
 #define FILE_PATH_COMPONENT_NONGREEDY "(?: " FILE_PATH_CHARS " | (?&FILE_PATH_PAREN) )+?"
+#define FILE_PATH_WRAPPED_COMPONENT "(?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) | (?<= - ) \\r? \\n [[:blank:]]* (?= " FILE_PATH_CHARS " ) )+"
 #define FILE_PATH_SEPARATOR "(?: / (?: \\r? \\n [[:blank:]]* )? )"
-#define FILE_PATH_SLASHED "(?: (?: " FILE_PATH_SEPARATOR " | ~ " FILE_PATH_SEPARATOR " | \\.{1,2} " FILE_PATH_SEPARATOR " ) " FILE_PATH_COMPONENT " (?: " FILE_PATH_SEPARATOR " " FILE_PATH_COMPONENT " )* (?: " FILE_PATH_SEPARATOR " )? | (?: " FILE_PATH_COMPONENT " " FILE_PATH_SEPARATOR " )+ " FILE_PATH_COMPONENT " )"
+#define FILE_PATH_SLASHED "(?: (?: " FILE_PATH_SEPARATOR " | ~ " FILE_PATH_SEPARATOR " | \\.{1,2} " FILE_PATH_SEPARATOR " ) " FILE_PATH_WRAPPED_COMPONENT " (?: " FILE_PATH_SEPARATOR " " FILE_PATH_WRAPPED_COMPONENT " )* (?: " FILE_PATH_SEPARATOR " )? | (?: " FILE_PATH_WRAPPED_COMPONENT " " FILE_PATH_SEPARATOR " )+ " FILE_PATH_WRAPPED_COMPONENT " )"
 /* Keep an anchor with its path, including inside prose/tool parentheses. */
 #define FILE_PATH_FRAGMENT "(?: \\# [-[:alnum:]_~.+@%:/?&=#]* )?"
 /* A final ')' is treated as surrounding prose. This intentionally favors

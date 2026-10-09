@@ -1454,7 +1454,7 @@ terminal_widget_prime_wrapped_path (TerminalWidget *widget, GdkEvent *event)
   previous_y = MAX (previous_y, padding.top);
 
   /* VTE searches forwards from the hovered row. Check just the preceding
-   * row for a slash continuation; never copy the scrollback. */
+   * row for a slash/hyphen continuation; never copy the scrollback. */
   if (widget->wrapped_path_row_regex == NULL)
     widget->wrapped_path_row_regex = vte_regex_new_for_match ("[^\\r\\n]+", -1, PCRE2_UTF | PCRE2_MULTILINE, NULL);
   if (widget->wrapped_path_row_regex == NULL)
@@ -1469,7 +1469,7 @@ terminal_widget_prime_wrapped_path (TerminalWidget *widget, GdkEvent *event)
       goto out;
     }
   g_strchomp (text);
-  enabled = g_str_has_suffix (text, "/");
+  enabled = g_str_has_suffix (text, "/") || g_str_has_suffix (text, "-");
   if (!enabled)
     {
       g_free (text);
@@ -2188,7 +2188,7 @@ terminal_widget_normalize_path_candidate (const gchar *candidate,
             }
 
           if (normalized->len == 0
-              || normalized->str[normalized->len - 1] != '/'
+              || strchr ("/-", normalized->str[normalized->len - 1]) == NULL
               || previous_was_wrap)
             {
               g_string_free (normalized, TRUE);

@@ -146,11 +146,14 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   gboolean literal_hash = strstr (kind, "hash-filename") != NULL;
   gboolean selected = g_strcmp0 (kind, "selected-fragment") == 0;
   gboolean wrapped = g_str_has_prefix (kind, "wrapped-");
-  gboolean native = g_strcmp0 (kind, "wrapped-native") == 0;
+  gboolean hyphen = g_str_has_prefix (kind, "wrapped-hyphen-");
+  gboolean hyphen_top = g_strcmp0 (kind, "wrapped-hyphen-top") == 0;
+  gboolean native = g_strcmp0 (kind, "wrapped-native") == 0
+                    || g_strcmp0 (kind, "wrapped-hyphen-native") == 0;
   gboolean separate = g_strcmp0 (kind, "wrapped-separate") == 0;
   gboolean wrapped_osc8 = g_strcmp0 (kind, "wrapped-osc8") == 0;
-  gdouble click_column = wrapped ? separate ? 58.5 : 8.5 : selected ? 55.5 : 3.5;
-  gdouble click_row = wrapped ? 1.5 : 0.5;
+  gdouble click_column = hyphen_top ? 113.5 : wrapped ? separate ? 58.5 : 8.5 : selected ? 55.5 : 3.5;
+  gdouble click_row = wrapped && !hyphen_top ? 1.5 : 0.5;
   GAppInfo *handler;
   GError *error = NULL;
   pid_t child;
@@ -173,6 +176,8 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   g_assert_true (g_app_info_set_as_default_for_type (handler, "text/plain", &error));
   g_assert_no_error (error);
   g_assert_true (g_app_info_set_as_default_for_type (handler, "text/html", &error));
+  g_assert_no_error (error);
+  g_assert_true (g_app_info_set_as_default_for_type (handler, "application/json", &error));
   g_assert_no_error (error);
   g_object_set (fixture->preferences,
                 "misc-prefer-mouse-selection", FALSE,
@@ -219,7 +224,8 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
       GdkEvent *event = pointer_event_at (fixture, GDK_ENTER_NOTIFY, 0,
                                          motion ? 150.5 : click_column, motion ? 3.5 : click_row);
       gchar *match;
-      gchar *full_path = g_strdup_printf ("%s/\n    database/telegram_backup.fragments-v7.txt", pane);
+      gchar *full_path = hyphen ? g_strdup ("artifacts/anatomy-\n  tree-toggle-audit/verification-summary.json")
+                               : g_strdup_printf ("%s/\n    database/telegram_backup.fragments-v7.txt", pane);
       gint tag;
 
       /* No preceding query or hover over row zero may prime VTE's match cache. */
@@ -281,6 +287,11 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
                   : g_strcmp0 (kind, "osc8") == 0 ? target
                   : g_strcmp0 (kind, "parenthesized") == 0 ? parenthesized : plain;
   gchar *wrapped_target = wrapped ? g_build_filename (pane, "database", "telegram_backup.fragments-v7.txt", NULL) : NULL;
+  if (hyphen)
+    {
+      g_free (wrapped_target);
+      wrapped_target = g_build_filename (pane, "artifacts", "anatomy-tree-toggle-audit", "verification-summary.json", NULL);
+    }
   if (wrapped && !separate && !wrapped_osc8)
     selected_path = wrapped_target;
   uri = g_filename_to_uri (selected_path, NULL, NULL);
@@ -378,6 +389,16 @@ main (int argc, char **argv)
         output = g_strdup_printf ("\033[H\033[2J\033]8;;%s\033\\FILE-LINK\033]8;;\033\\\r\nLINK-READY", uri);
       else if (g_strcmp0 (argv[3], "absolute") == 0)
         output = g_strdup_printf ("\033[H\033[2J%s/source.txt\r\nLINK-READY", argv[2]);
+      else if (g_str_has_prefix (argv[3], "wrapped-hyphen-"))
+        {
+          gchar *directory = g_build_filename (argv[2], "artifacts", "anatomy-tree-toggle-audit", NULL);
+          gchar *file = g_build_filename (directory, "verification-summary.json", NULL);
+          if (g_mkdir_with_parents (directory, 0700) != 0 || !g_file_set_contents (file, "{}\n", -1, NULL))
+            return 1;
+          output = g_strdup ("\033[H\033[2JAudited 242 tree rows across all three atlases. All 277 tests and the production build pass. Audit results (artifacts/anatomy-\r\n  tree-toggle-audit/verification-summary.json).\r\nLINK-READY");
+          g_free (file);
+          g_free (directory);
+        }
       else if (g_str_has_prefix (argv[3], "wrapped-"))
         {
           gchar *directory = g_build_filename (argv[2], "database", NULL);
@@ -445,6 +466,10 @@ main (int argc, char **argv)
   g_test_add ("/links/tmux/wrapped-wide", Fixture, "wrapped-wide", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/wrapped-osc8", Fixture, "wrapped-osc8", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/wrapped-separate", Fixture, "wrapped-separate", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-hyphen-bottom", Fixture, "wrapped-hyphen-bottom", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-hyphen-top", Fixture, "wrapped-hyphen-top", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/wrapped-hyphen-click", Fixture, "wrapped-hyphen-click", setup, links_through_tmux, teardown);
+  g_test_add ("/links/native/wrapped-hyphen-hover", Fixture, "wrapped-hyphen-native", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/relative-fragment", Fixture, "relative-fragment", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/parenthesized-fragment", Fixture, "parenthesized-fragment", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/selected-fragment", Fixture, "selected-fragment", setup, links_through_tmux, teardown);
