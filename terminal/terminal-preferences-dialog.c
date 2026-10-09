@@ -1633,7 +1633,7 @@ terminal_preferences_dialog_init (TerminalPreferencesDialog *dialog)
   row++;
 
   button = gtk_check_button_new_with_mnemonic (_("Automatically detect local _file paths"));
-  gtk_widget_set_tooltip_text (button, _("Make plain paths clickable when one of the allowed foreground applications is running. Paths already on screen are evaluated using the current foreground process."));
+  gtk_widget_set_tooltip_text (button, _("Make plain paths clickable in the current foreground job, except in excluded applications. Paths already on screen are evaluated using the current job."));
   g_object_bind_property (G_OBJECT (dialog->preferences), "misc-auto-detect-file-paths",
                           G_OBJECT (button), "active",
                           G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
@@ -1648,13 +1648,33 @@ terminal_preferences_dialog_init (TerminalPreferencesDialog *dialog)
 
   label = gtk_label_new_with_mnemonic (_("Path detection applications:"));
   gtk_label_set_xalign (GTK_LABEL (label), 0.0f);
-  gtk_widget_set_tooltip_text (label, _("Semicolon-separated process names, for example fish;codex;antigravity;gemini."));
+  gtk_widget_set_tooltip_text (label, _("Use * for all applications, or semicolon-separated process names such as fish;codex;pi. Exclusions take precedence."));
   gtk_grid_attach (GTK_GRID (grid), label, 0, row, 1, 1);
   gtk_widget_show (label);
 
   entry = gtk_entry_new ();
-  gtk_widget_set_tooltip_text (entry, _("Semicolon-separated foreground process names."));
+  gtk_widget_set_tooltip_text (entry, _("Use * for all applications, or semicolon-separated foreground process names. Exclusions take precedence."));
   g_object_bind_property (G_OBJECT (dialog->preferences), "misc-auto-detect-file-path-apps",
+                          G_OBJECT (entry), "text",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-auto-detect-file-paths",
+                          G_OBJECT (entry), "sensitive",
+                          G_BINDING_SYNC_CREATE);
+  gtk_widget_set_hexpand (entry, TRUE);
+  gtk_grid_attach (GTK_GRID (grid), entry, 1, row, 1, 1);
+  terminal_gtk_label_set_a11y_relation (GTK_LABEL (label), entry);
+  gtk_label_set_mnemonic_widget (GTK_LABEL (label), entry);
+  gtk_widget_show (entry);
+
+  row++;
+  label = gtk_label_new_with_mnemonic (_("_Excluded path detection applications:"));
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0f);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, row, 1, 1);
+  gtk_widget_show (label);
+
+  entry = gtk_entry_new ();
+  gtk_widget_set_tooltip_text (entry, _("Semicolon-separated process names, for example nano;vim;nvim;emacs. An excluded application anywhere in the foreground job disables automatic path actions, even under a shell wrapper. Explicit OSC 8 hyperlinks are unaffected. Leave empty for no exclusions."));
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-auto-detect-file-path-excluded-apps",
                           G_OBJECT (entry), "text",
                           G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
   g_object_bind_property (G_OBJECT (dialog->preferences), "misc-auto-detect-file-paths",

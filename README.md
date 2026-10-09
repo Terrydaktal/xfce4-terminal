@@ -26,9 +26,15 @@ forget, it's actively developed.
 ### Local Path Hyperlinks
 
 This fork can detect local file paths in output when the foreground PTY
-application is listed by the `misc-auto-detect-file-path-apps` preference. The
-default allowlist covers Fish, Codex, Antigravity, Gemini, and AGY. Existing
-files open through their normal desktop handler; files that need selection are
+application is permitted by the `misc-auto-detect-file-path-apps` preference.
+The default is `*` (all applications), including Fish and Pi. The separate
+`misc-auto-detect-file-path-excluded-apps` preference excludes Nano, Vi/Vim
+(including View and restricted variants), Neovim, Emacs and Emacsclient by
+default. Both lists are editable in Preferences beside automatic path detection;
+use an empty exclusion list to permit every application, or replace `*` with
+semicolon-separated names for a stricter allowlist. Explicit OSC 8 links are
+unaffected by these lists. Existing files open through their normal desktop
+handler; files that need selection are
 opened through the executable named by `misc-hyperlink-file-manager` (normally
 `pcmanfm`). Missing paths use the optional `unearth` fallback asynchronously.
 
@@ -44,19 +50,20 @@ and `--lossless-paths`; the forked Unearth source in `/home/lewis/Dev/fsx`
 provides these options.
 
 VTE does not retain the process that originally emitted screen content, so the
-foreground-process allowlist is evaluated at click time rather than against
+foreground-process policy is evaluated at click time rather than against
 the historical producer of a line. The check includes processes in the same
-foreground job, so Bash-wrapped agents work without allowing every Bash job.
-Background jobs and other tmux panes cannot enable the active job. The traversal
-has a 50 ms fail-closed budget and does not run during output, ordinary typing
-or pointer movement. VTE's regex underlining is independent of this click-time
-policy.
+foreground job, so Bash-wrapped agents work without allowing every Bash job
+in a strict allowlist. Any excluded member overrides an allowed wrapper.
+Background jobs and other tmux panes cannot allow or exclude the active job.
+The process-group traversal has a 50 ms fail-closed budget and does not run
+during output, ordinary typing or pointer movement. VTE's regex underlining
+is independent of this click-time policy.
 
 For local tmux clients launched with an explicit absolute `-S` socket (including
 tmux-simple), path resolution now follows that client's active pane. A bounded
 read-only query to the same tmux binary maps the client PID to its pane; `/proc`
 then supplies the pane's foreground process and current working directory.
-This preserves the application allowlist and resolves relative paths against
+This preserves the application policy and resolves relative paths against
 the program's directory rather than the tmux attach command's old directory.
 Queries happen only during a path action, with a 250 ms timeout. Missing or
 unresponsive sockets fail closed; no server is created and no shell is invoked.

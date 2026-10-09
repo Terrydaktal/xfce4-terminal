@@ -136,13 +136,23 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   gchar *target = g_build_filename (pane, "link file.txt", NULL);
   gchar *plain = g_build_filename (pane, "source.txt", NULL);
   gboolean pi = g_str_has_prefix (kind, "pi-");
-  gboolean wrapper = g_str_has_prefix (kind, "pi-wrapper");
-  gboolean background = g_strcmp0 (kind, "pi-background-denied") == 0;
+  gboolean editor = g_str_has_prefix (kind, "editor-");
+  gboolean wrapper = g_str_has_prefix (kind, "pi-wrapper") || g_str_has_prefix (kind, "editor-wrapper");
+  gboolean background = g_strcmp0 (kind, "pi-background-denied") == 0
+                        || g_strcmp0 (kind, "editor-background") == 0;
   gboolean argument = g_strcmp0 (kind, "pi-argument-denied") == 0;
   gboolean other_pane = g_strcmp0 (kind, "pi-other-pane-denied") == 0;
-  gboolean denied = g_strcmp0 (kind, "denied") == 0 || g_str_has_suffix (kind, "-denied");
-  gboolean osc8 = g_strcmp0 (kind, "osc8") == 0;
-  gchar *program = g_build_filename (root, pi ? "pi" : "codex", NULL);
+  gboolean inactive_editor = g_strcmp0 (kind, "editor-other-pane") == 0;
+  gboolean osc8 = g_strcmp0 (kind, "osc8") == 0 || g_strcmp0 (kind, "editor-osc8") == 0;
+  gboolean denied = g_strcmp0 (kind, "denied") == 0 || g_str_has_suffix (kind, "-denied")
+                    || (editor && !background && !inactive_editor && !osc8
+                        && g_strcmp0 (kind, "editor-disabled") != 0);
+  const gchar *name = pi ? "pi" : "codex";
+  if (editor && !background && !inactive_editor)
+    name = g_strcmp0 (kind, "editor-vim") == 0 ? "vim"
+           : g_strcmp0 (kind, "editor-nvim") == 0 ? "nvim"
+           : g_strcmp0 (kind, "editor-emacs") == 0 ? "emacs" : "nano";
+  gchar *program = g_build_filename (root, name, NULL);
   gchar *other = g_build_filename (root, "nano", NULL);
   gchar *background_ready = g_build_filename (root, "background-ready", NULL);
   gchar *manager = g_build_filename (root, "link-manager", NULL);
@@ -159,7 +169,8 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   gboolean hyphen_top = g_strcmp0 (kind, "wrapped-hyphen-top") == 0;
   gboolean native = g_strcmp0 (kind, "wrapped-native") == 0
                     || g_strcmp0 (kind, "wrapped-hyphen-native") == 0
-                    || g_strcmp0 (kind, "pi-wrapper-native") == 0;
+                    || g_strcmp0 (kind, "pi-wrapper-native") == 0
+                    || g_strcmp0 (kind, "editor-wrapper-native") == 0;
   gboolean separate = g_strcmp0 (kind, "wrapped-separate") == 0;
   gboolean wrapped_osc8 = g_strcmp0 (kind, "wrapped-osc8") == 0;
   gdouble click_column = pi ? 10.5 : hyphen_top ? 113.5 : wrapped ? separate ? 58.5 : 8.5 : selected ? 55.5 : 3.5;
@@ -169,9 +180,17 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   pid_t child;
   pid_t background_child = 0;
   const gchar *allowlist = pi ? "pi" : "codex";
+  const gchar *excluded_apps = g_value_get_string (g_param_spec_get_default_value (
+    g_object_class_find_property (G_OBJECT_GET_CLASS (fixture->preferences), "misc-auto-detect-file-path-excluded-apps")));
 
-  if (g_strcmp0 (kind, "denied") == 0 || g_strcmp0 (kind, "pi-wrapper-denied") == 0)
+  if (g_strcmp0 (kind, "pi-default") == 0 || editor)
+    allowlist = g_value_get_string (g_param_spec_get_default_value (
+      g_object_class_find_property (G_OBJECT_GET_CLASS (fixture->preferences), "misc-auto-detect-file-path-apps")));
+  else if (g_strcmp0 (kind, "denied") == 0 || g_strcmp0 (kind, "pi-wrapper-denied") == 0)
     allowlist = "not-allowed";
+  if (g_strcmp0 (kind, "pi-background-denied") == 0 || argument || other_pane
+      || g_strcmp0 (kind, "editor-disabled") == 0)
+    excluded_apps = "";
 
   g_assert_nonnull (g_getenv ("TEST_TMUX"));
   g_assert_cmpint (g_mkdir (pane, 0700), ==, 0);
@@ -187,6 +206,7 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
     g_assert_cmpint (symlink (self, other), ==, 0);
   g_assert_cmpint (symlink (self, manager), ==, 0);
   g_setenv ("LINK_OPEN_LOG", log, TRUE);
+  g_setenv ("LINK_OTHER_PANE_READY", background_ready, TRUE);
   handler = g_app_info_create_from_commandline (command, "Hyperlink test recorder",
                                                 G_APP_INFO_CREATE_SUPPORTS_URIS, &error);
   g_assert_no_error (error);
@@ -203,6 +223,7 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
                 "misc-highlight-urls", TRUE,
                 "misc-auto-detect-file-paths", TRUE,
                 "misc-auto-detect-file-path-apps", allowlist,
+                "misc-auto-detect-file-path-excluded-apps", excluded_apps,
                 "misc-hyperlink-open-button", 1u,
                 "misc-hyperlink-open-modifier", (guint) GDK_CONTROL_MASK,
                 "misc-hyperlink-file-manager", manager,
@@ -222,7 +243,7 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
         {
           if (setsid () < 0)
             _exit (126);
-          execl (program, "pi", "--wait", background_ready, NULL);
+          execl (editor ? other : program, editor ? "nano" : "pi", "--wait", background_ready, NULL);
           _exit (127);
         }
       gint64 deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
@@ -267,7 +288,7 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
         }
       execl (g_getenv ("TEST_TMUX"), "tmux", "-S", socket,
              "new-session", "-A", "-s", "links", "--",
-             background || argument ? other : program, "--emit-links", pane, kind,
+             (background && pi) || argument ? other : program, "--emit-links", pane, kind,
              argument ? "pi" : NULL, NULL);
       _exit (127);
     }
@@ -292,6 +313,20 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
       g_assert_true (WIFEXITED (status));
       g_assert_cmpint (WEXITSTATUS (status), ==, 0);
       g_assert_true (wait_for_text (fixture->terminal, "OTHER-PANE-READY"));
+    }
+  if (inactive_editor)
+    {
+      gchar *args[] = { (gchar *) g_getenv ("TEST_TMUX"), "-N", "-S", socket, "new-window", "-d", "-t", "links",
+                        other, "--emit-links", pane, "editor-inactive", NULL };
+      gint status;
+      g_assert_true (g_spawn_sync (NULL, args, NULL, 0, NULL, NULL, NULL, NULL, &status, NULL));
+      g_assert_true (WIFEXITED (status));
+      g_assert_cmpint (WEXITSTATUS (status), ==, 0);
+      gint64 deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
+      while (!g_file_test (background_ready, G_FILE_TEST_EXISTS)
+             && g_get_monotonic_time () < deadline)
+        settle ();
+      g_assert_true (g_file_test (background_ready, G_FILE_TEST_EXISTS));
     }
   if (pi)
     {
@@ -494,7 +529,7 @@ main (int argc, char **argv)
       tcsetattr (0, TCSANOW, &attrs);
       path = g_build_filename (argv[2], "link file.txt", NULL);
       uri = g_filename_to_uri (path, NULL, NULL);
-      if (g_strcmp0 (argv[3], "osc8") == 0)
+      if (g_strcmp0 (argv[3], "osc8") == 0 || g_strcmp0 (argv[3], "editor-osc8") == 0)
         output = g_strdup_printf ("\033[H\033[2J\033]8;;%s\033\\FILE-LINK\033]8;;\033\\\r\nLINK-READY", uri);
       else if (g_str_has_prefix (argv[3], "pi-"))
         {
@@ -562,6 +597,9 @@ main (int argc, char **argv)
       else
         output = g_strdup ("\033[H\033[2J./source.txt\r\nLINK-READY");
       write (1, output, strlen (output));
+      if (g_strcmp0 (argv[3], "editor-inactive") == 0
+          && !g_file_set_contents (g_getenv ("LINK_OTHER_PANE_READY"), "ready", -1, NULL))
+        return 1;
       while (read (0, buffer, sizeof buffer) > 0)
         ;
       return 0;
@@ -597,11 +635,22 @@ main (int argc, char **argv)
   g_test_add ("/links/tmux/osc8-hash-filename", Fixture, "osc8-hash-filename", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/denied", Fixture, "denied", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/timeout", Fixture, "timeout", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/pi-default", Fixture, "pi-default", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/pi-wrapper", Fixture, "pi-wrapper", setup, links_through_tmux, teardown);
   g_test_add ("/links/native/pi-wrapper", Fixture, "pi-wrapper-native", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/pi-wrapper-denied", Fixture, "pi-wrapper-denied", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/pi-background-denied", Fixture, "pi-background-denied", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/pi-argument-denied", Fixture, "pi-argument-denied", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/pi-other-pane-denied", Fixture, "pi-other-pane-denied", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-nano", Fixture, "editor-nano", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-vim", Fixture, "editor-vim", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-nvim", Fixture, "editor-nvim", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-emacs", Fixture, "editor-emacs", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-wrapper", Fixture, "editor-wrapper", setup, links_through_tmux, teardown);
+  g_test_add ("/links/native/editor-wrapper", Fixture, "editor-wrapper-native", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-disabled", Fixture, "editor-disabled", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-osc8", Fixture, "editor-osc8", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-background", Fixture, "editor-background", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/editor-other-pane", Fixture, "editor-other-pane", setup, links_through_tmux, teardown);
   return g_test_run ();
 }

@@ -1308,22 +1308,26 @@ terminal_widget_process_matches_allowlist (pid_t pid,
 
 static gboolean
 terminal_widget_process_group_allows_path_detection (pid_t pgrp,
-                                                     const gchar *allowlist)
+                                                     const gchar *allowlist,
+                                                     const gchar *excluded_apps)
 {
   GDir *proc_dir;
   const gchar *entry;
   gint64 deadline;
   gboolean matches;
+  gboolean has_exclusions = excluded_apps != NULL && *excluded_apps != '\0';
 
   if (pgrp <= 0 || allowlist == NULL || *allowlist == '\0')
     return FALSE;
+  if (has_exclusions && terminal_widget_process_matches_allowlist (pgrp, excluded_apps))
+    return FALSE;
 
   matches = terminal_widget_process_matches_allowlist (pgrp, allowlist);
-  if (matches)
+  if (matches && !has_exclusions)
     return TRUE;
 
   /* A wrapper may own the foreground job while the application is another
-   * member. Never search other jobs or inactive tmux panes.
+   * member. Never search other jobs or let a wrapper bypass an exclusion.
    * This traversal runs only for path actions, with a fail-closed time budget. */
   proc_dir = g_dir_open ("/proc", 0, NULL);
   if (proc_dir == NULL)
@@ -1346,10 +1350,15 @@ terminal_widget_process_group_allows_path_detection (pid_t pgrp,
       pid = (pid_t) value;
       if (pid == pgrp || getpgid (pid) != pgrp)
         continue;
+      if (has_exclusions && terminal_widget_process_matches_allowlist (pid, excluded_apps))
+        {
+          matches = FALSE;
+          break;
+        }
       if (!matches && terminal_widget_process_matches_allowlist (pid, allowlist)
           && getpgid (pid) == pgrp)
         matches = TRUE;
-      if (matches)
+      if (matches && !has_exclusions)
         break;
     }
   g_dir_close (proc_dir);
@@ -1366,33 +1375,32 @@ terminal_widget_foreground_process_allows_path_detection (TerminalWidget *widget
   pid_t pgrp;
   gboolean enabled;
   gchar *allowlist = NULL;
+  gchar *excluded_apps = NULL;
   gboolean matches;
 
   /* VTE stores screen text, not the PID that produced each cell. The only
    * reliable provenance available here is the current PTY foreground group. */
   g_object_get (G_OBJECT (widget->preferences),
                 "misc-auto-detect-file-paths", &enabled,
-                "misc-auto-detect-file-path-apps", &allowlist,
                 NULL);
   if (!enabled)
-    {
-      g_free (allowlist);
-      return FALSE;
-    }
+    return FALSE;
 
   pty = vte_terminal_get_pty (VTE_TERMINAL (widget));
   if (!VTE_IS_PTY (pty))
-    {
-      g_free (allowlist);
-      return FALSE;
-    }
+    return FALSE;
 
+  g_object_get (G_OBJECT (widget->preferences),
+                "misc-auto-detect-file-path-apps", &allowlist,
+                "misc-auto-detect-file-path-excluded-apps", &excluded_apps,
+                NULL);
   pty_fd = vte_pty_get_fd (pty);
   pgrp = pty_fd >= 0 ? tcgetpgrp (pty_fd) : -1;
   if (pgrp > 0 && terminal_widget_process_application (pgrp) == TERMINAL_FOREGROUND_TMUX)
     pgrp = terminal_tmux_pane_foreground_pid (pgrp);
-  matches = terminal_widget_process_group_allows_path_detection (pgrp, allowlist);
+  matches = terminal_widget_process_group_allows_path_detection (pgrp, allowlist, excluded_apps);
   g_free (allowlist);
+  g_free (excluded_apps);
   return matches;
 }
 

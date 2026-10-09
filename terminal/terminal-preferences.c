@@ -121,6 +121,7 @@ enum
   PROP_MISC_HYPERLINK_TOOLTIPS_ENABLED,
   PROP_MISC_AUTO_DETECT_FILE_PATHS,
   PROP_MISC_AUTO_DETECT_FILE_PATH_APPS,
+  PROP_MISC_AUTO_DETECT_FILE_PATH_EXCLUDED_APPS,
   PROP_MISC_HYPERLINK_FILE_MANAGER,
   PROP_MISC_HYPERLINK_INSERT_BUTTON,
   PROP_MISC_HYPERLINK_INSERT_MODIFIER,
@@ -1155,12 +1156,25 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
    * TerminalPreferences:misc-auto-detect-file-path-apps:
    *
    * Semicolon-separated foreground process names for automatic path links.
+   * A wildcard enables all applications except the excluded names below.
    **/
   preferences_props[PROP_MISC_AUTO_DETECT_FILE_PATH_APPS] =
     g_param_spec_string ("misc-auto-detect-file-path-apps",
                          NULL,
                          "MiscAutoDetectFilePathApps",
-                         "fish;codex;antigravity;gemini;agy",
+                         "*",
+                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-auto-detect-file-path-excluded-apps:
+   *
+   * Exclusions take precedence over the allowed names in the foreground job.
+   **/
+  preferences_props[PROP_MISC_AUTO_DETECT_FILE_PATH_EXCLUDED_APPS] =
+    g_param_spec_string ("misc-auto-detect-file-path-excluded-apps",
+                         NULL,
+                         "MiscAutoDetectFilePathExcludedApps",
+                         "nano;vi;vim;view;rvim;rview;nvim;emacs;emacsclient",
                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   /**
