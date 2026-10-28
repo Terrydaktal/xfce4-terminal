@@ -178,6 +178,45 @@ terminal_tmux_pane_foreground_pid (pid_t client_pid)
 }
 
 gboolean
+terminal_tmux_uses_native_context_menu (pid_t client_pid)
+{
+#ifdef __linux__
+  gchar *socket = client_socket (client_pid);
+  gchar *executable, *output, **lines;
+  gboolean native = FALSE;
+
+  if (socket == NULL)
+    return FALSE;
+  executable = g_strdup_printf ("/proc/%d/exe", (gint) client_pid);
+  output = query_clients (executable, socket,
+                          "#{client_pid} #{pane_in_mode} #{mouse_any_flag}");
+  g_free (executable);
+  g_free (socket);
+  if (output == NULL)
+    return FALSE;
+  lines = g_strsplit (output, "\n", -1);
+  for (guint i = 0; lines[i] != NULL; i++)
+    {
+      long client;
+      guint in_mode, mouse;
+      char extra;
+      if (sscanf (lines[i], "%ld %u %u %c", &client, &in_mode, &mouse, &extra) == 3
+          && client == client_pid && in_mode <= 1 && mouse <= 1)
+        {
+          native = in_mode != 0 || mouse == 0;
+          break;
+        }
+    }
+  g_strfreev (lines);
+  g_free (output);
+  return native;
+#else
+  (void) client_pid;
+  return FALSE;
+#endif
+}
+
+gboolean
 terminal_tmux_copy_selection (pid_t client_pid)
 {
 #ifdef __linux__

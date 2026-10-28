@@ -112,6 +112,26 @@ This selects text currently displayed by tmux; selections spanning multiple page
 of tmux's history still require tmux copy mode. It does not change Termux's Android
 keyboard or touch handling.
 
+### Right-Click Menus With tmux
+
+At a shell or another non-mouse-aware pane, ordinary right-click opens XFCE's
+configured context menu, including Preferences and Update in Place. It also works
+while reading or selecting tmux history, without clearing the selection or moving
+the viewport. Mouse-aware applications retain right-click input; Shift+right-click
+opens the terminal menu instead, just as outside tmux.
+
+The terminal checks the active pane of its attached local tmux client, using the
+existing owner-checked explicit `-S` socket and 250 ms query limit. Only right-click
+performs this query; ordinary clicks, scrolling and pointer movement do not. If the
+pane cannot be verified, normal VTE handling remains in force and Shift+right-click
+is still available. Remote SSH/Mosh tmux sessions are not guessed from local state.
+The entire locally handled press/motion/release stays local, so no orphan mouse
+release reaches the application. No tmux configuration or server restart is needed;
+open a window using the rebuilt terminal to activate the change.
+
+`test-terminal-context-menu` uses a real widget and private tmux/PTY fixtures to
+check shell, application, Shift and history-selection routing under Xvfb.
+
 ### Copy Shortcuts And Application Selections
 
 The Copy accelerator consumes the key only when there is text to copy locally.

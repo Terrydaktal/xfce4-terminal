@@ -272,6 +272,7 @@ struct _TerminalWidget
   pcre2_code_8 *regex_pcre[G_N_ELEMENTS (regex_patterns)];
   TerminalUnearthSearch *unearth_search;
   TerminalMouseSelection mouse_selection;
+  gboolean native_right_click;
   gboolean link_selection_drag_pending;
   gdouble link_selection_click_x;
   gdouble link_selection_click_y;
@@ -1155,6 +1156,18 @@ terminal_widget_foreground_process_is_codex (TerminalWidget *widget)
                             : TERMINAL_FOREGROUND_OTHER;
     }
   return application == TERMINAL_FOREGROUND_CODEX;
+}
+
+static gboolean
+terminal_widget_tmux_uses_native_context_menu (TerminalWidget *widget)
+{
+  VtePty *pty = vte_terminal_get_pty (VTE_TERMINAL (widget));
+  int fd = pty != NULL ? vte_pty_get_fd (pty) : -1;
+  pid_t pgrp = fd >= 0 ? tcgetpgrp (fd) : -1;
+
+  return pgrp > 0
+         && terminal_widget_process_application (pgrp) == TERMINAL_FOREGROUND_TMUX
+         && terminal_tmux_uses_native_context_menu (pgrp);
 }
 
 gboolean
@@ -2926,6 +2939,12 @@ terminal_widget_button_release_event (GtkWidget *widget,
   GdkEvent *forwarded;
   gboolean handled;
 
+  if (event->button == 3 && terminal_widget->native_right_click)
+    {
+      terminal_widget->native_right_click = FALSE;
+      return TRUE;
+    }
+
   if (event->button == 1)
     terminal_widget->link_selection_drag_pending = FALSE;
 
@@ -2959,6 +2978,9 @@ terminal_widget_motion_notify_event (GtkWidget *widget,
   TerminalWidget *terminal_widget = TERMINAL_WIDGET (widget);
   GdkEvent *forwarded;
   gboolean handled;
+
+  if (terminal_widget->native_right_click && (event->state & GDK_BUTTON3_MASK))
+    return TRUE;
 
   if (!(event->state & (GDK_BUTTON1_MASK | GDK_BUTTON2_MASK | GDK_BUTTON3_MASK)))
     terminal_widget_prime_wrapped_path (terminal_widget, (GdkEvent *) event);
@@ -3016,6 +3038,8 @@ terminal_widget_button_press_event (GtkWidget *widget,
 
   if (event->type == GDK_BUTTON_PRESS)
     {
+      if (event->button == 3)
+        terminal_widget->native_right_click = FALSE;
       g_object_get (G_OBJECT (terminal_widget->preferences),
                     "misc-hyperlink-insert-button", &insert_button,
                     "misc-hyperlink-insert-modifier", &insert_modifier,
@@ -3063,9 +3087,16 @@ terminal_widget_button_press_event (GtkWidget *widget,
         }
       else if (event->button == 3)
         {
-          signal_id = g_signal_connect (G_OBJECT (widget), "commit",
-                                        G_CALLBACK (terminal_widget_commit), &committed);
+          /* tmux always captures the outer mouse, even at a non-mouse-aware shell. */
+          if ((event->state & modifiers) == 0
+              && terminal_widget_tmux_uses_native_context_menu (terminal_widget))
+            intercept = TRUE;
+          else
+            signal_id = g_signal_connect (G_OBJECT (widget), "commit",
+                                          G_CALLBACK (terminal_widget_commit), &committed);
         }
+      if (event->button == 3 && intercept)
+        terminal_widget->native_right_click = TRUE;
     }
 
   if (event->type == GDK_BUTTON_PRESS && event->button == 1)
