@@ -142,6 +142,36 @@ are consumed before GTK starts and are not passed to the shell. Opening a window
 with this rebuilt version enables the checker; already-running older binaries
 cannot acquire it without restarting.
 
+### Application Build Indicators
+
+The terminal also tracks the active tab's local native application, including
+Codex without any Codex-side title/build-monitor patch. When its running GNU ELF
+build ID differs from the current executable at its launch entry, only the
+application label is struck through. If that label is absent, a struck-through
+application label is prepended; unrelated title text and the raw OSC/tab title
+are preserved. The application's marker and the terminal's own `Terminal` marker
+are independent. Legacy application-generated strokes on an explicit app label
+are normalized rather than doubled, and removed once the application is known
+to match the current local build.
+
+Each window checks its active foreground process every two seconds in a worker,
+not during typing, drawing, output or hover. The resolver follows local tmux's
+active pane and bounded shell/runtime wrappers to a unique native application.
+PID start time and executable inode guard against process reuse and same-PID
+`exec`; switching tabs invalidates pending checks immediately. A stable process
+reuses its captured running build ID and launch entry. The existing one-second
+filesystem debounce and 30-second fallback monitor changes to that entry.
+
+Launch checking uses the application's own executable/arguments and, where it
+identifies that same executable, its own PATH. It never chooses an unrelated
+installation from the terminal's PATH, executes `--version`, parses arbitrary
+wrapper scripts or contacts a server. Absolute native launch entries and
+identified launch symlinks are retained across replacements. Remote SSH/Mosh,
+ambiguous wrapper children, interpreted applications without an identifiable
+native child, and images without GNU ELF build IDs remain unmarked. This is a
+comparison with the current local launch target, not an upstream update check;
+it does not restart, update or send input to the application.
+
 ### Update in Place
 
 Right-click anywhere in a normal terminal window and choose **Update in Place**

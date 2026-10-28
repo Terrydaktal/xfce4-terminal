@@ -2,6 +2,8 @@ terminal_sources = [
   'main.c',
   'terminal-app.c',
   'terminal-app.h',
+  'terminal-application-monitor.c',
+  'terminal-application-monitor.h',
   'terminal-build-id.c',
   'terminal-build-id.h',
   'terminal-build-monitor.c',

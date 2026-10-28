@@ -42,6 +42,9 @@ GPid
 terminal_screen_get_child_pid (TerminalScreen *screen);
 
 gint
+terminal_screen_get_pty_fd (TerminalScreen *screen);
+
+gint
 terminal_screen_get_foreground_process_group (TerminalScreen *screen);
 
 gchar *

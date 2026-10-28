@@ -596,6 +596,91 @@ window_build_title (Fixture *fixture,
 }
 
 static void
+replace_application_image (const gchar *source,
+                           const gchar *target)
+{
+  gchar *contents, *temporary = g_strconcat (target, ".new", NULL);
+  gsize length;
+  g_assert_true (g_file_get_contents (source, &contents, &length, NULL));
+  g_assert_true (g_file_set_contents (temporary, contents, length, NULL));
+  g_assert_cmpint (g_chmod (temporary, 0700), ==, 0);
+  g_assert_cmpint (g_rename (temporary, target), ==, 0);
+  g_free (contents);
+  g_free (temporary);
+}
+
+static void
+window_application_title (void)
+{
+  const gchar *struck = "c\314\266o\314\266d\314\266e\314\266x\314\266";
+  const gchar *struck_terminal = "T\314\266e\314\266r\314\266m\314\266i\314\266n\314\266a\314\266l\314\266";
+  gchar *directory = g_dir_make_tmp ("terminal-window-application.XXXXXX", NULL);
+  gchar *program = g_build_filename (directory, "codex", NULL);
+  gchar *runtime = g_build_filename (directory, "node", NULL);
+  gchar *arguments[] = { program, "--hold", NULL };
+  gchar *runtime_arguments[] = { runtime, "--hold", NULL };
+  gchar *expected = g_strconcat (struck, " - project - Terminal", NULL);
+  gchar *both = g_strconcat (struck, " - project - ", struck_terminal, NULL);
+  TerminalTabAttr attr = { .command = arguments, .hold = TRUE };
+  TerminalTabAttr other_attr = { .command = runtime_arguments, .hold = TRUE };
+  TerminalPreferences *preferences = terminal_preferences_get ();
+  GtkWidget *window = terminal_window_new (NULL, FALSE, TERMINAL_VISIBILITY_HIDE,
+                                           TERMINAL_VISIBILITY_HIDE, TERMINAL_VISIBILITY_HIDE);
+  TerminalScreen *screen, *other;
+  gchar *raw;
+
+  replace_application_image (APPLICATION_FIXTURE, program);
+  replace_application_image (APPLICATION_FIXTURE, runtime);
+  screen = terminal_screen_new (&attr, 80, 24);
+  /* A normal native process with no cooperation beyond an ordinary OSC title. */
+  g_object_set (screen, "custom-title", expected, NULL);
+  terminal_window_add (TERMINAL_WINDOW (window), screen);
+  gtk_widget_show (window);
+  terminal_screen_launch_child (screen);
+  wait_window_title (window, "codex - project - Terminal");
+
+  replace_application_image (APPLICATION_FIXTURE_NEXT, program);
+  wait_window_title (window, expected);
+  raw = terminal_screen_get_title (screen);
+  g_assert_cmpstr (raw, ==, expected); /* The raw title is not rewritten by the terminal. */
+  g_free (raw);
+  g_assert_false (gtk_window_get_urgency_hint (GTK_WINDOW (window)));
+
+  other = terminal_screen_new (&other_attr, 80, 24);
+  g_object_set (other, "custom-title", "node - other - Terminal", NULL);
+  terminal_window_add (TERMINAL_WINDOW (window), other);
+  terminal_screen_launch_child (other);
+  wait_window_title (window, "node - other - Terminal");
+  GtkNotebook *notebook = GTK_NOTEBOOK (gtk_widget_get_ancestor (GTK_WIDGET (screen), GTK_TYPE_NOTEBOOK));
+  g_assert_nonnull (notebook);
+  gtk_notebook_set_current_page (notebook, 0);
+  wait_window_title (window, expected);
+
+  replace_build_candidate ("/usr/bin/true");
+  wait_window_title (window, both);
+  replace_build_candidate (self);
+  wait_window_title (window, expected);
+
+  terminal_screen_feed_text (screen, "e");
+  wait_window_title (window, "codex - project - Terminal");
+  g_object_ref (window);
+  gtk_widget_destroy (window);
+  gchar *destroyed_title = g_strdup (gtk_window_get_title (GTK_WINDOW (window)));
+  replace_application_image (APPLICATION_FIXTURE, program);
+  settle ();
+  g_assert_cmpstr (gtk_window_get_title (GTK_WINDOW (window)), ==, destroyed_title);
+  g_free (destroyed_title);
+  g_object_unref (window);
+  g_object_unref (preferences);
+  remove_test_directory (directory);
+  g_free (program);
+  g_free (runtime);
+  g_free (directory);
+  g_free (expected);
+  g_free (both);
+}
+
+static void
 wait_update_item (GtkWidget *item, gboolean sensitive)
 {
   TerminalBuildMonitor *monitor = terminal_build_monitor_get ();
@@ -692,6 +777,7 @@ main (int argc, char **argv)
     return 77;
   terminal_update_register_tests (build_candidate);
   terminal_launching_register_tests ();
+  g_test_add_func ("/terminal/title/active-application-build", window_application_title);
   g_test_add ("/terminal/update/context-menu", Fixture, NULL, setup_window, update_context_menu, teardown);
   g_test_add ("/terminal/title/stale-build-and-rollback", Fixture, NULL,
               setup_window, window_build_title, teardown);

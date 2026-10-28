@@ -35,6 +35,7 @@
 #include <gdk/gdk.h>
 #include <libxfce4ui/libxfce4ui.h>
 
+#include "terminal-application-monitor.h"
 #include "terminal-build-id.h"
 #include "terminal-build-monitor.h"
 #include "terminal-encoding-action.h"
@@ -202,6 +203,11 @@ terminal_window_build_changed (TerminalBuildMonitor *monitor,
 static void
 terminal_window_build_disconnected (TerminalWindow *window,
                                     gpointer data);
+static gboolean
+terminal_window_application_check (gpointer data);
+static void
+terminal_window_application_changed (TerminalApplicationMonitor *monitor,
+                                     TerminalWindow *window);
 static void
 terminal_window_action_set_encoding (GtkAction *action,
                                      const gchar *charset,
@@ -359,6 +365,8 @@ struct _TerminalWindowPrivate
 
   TerminalPreferences *preferences;
   TerminalBuildMonitor *build_monitor;
+  TerminalApplicationMonitor *application_monitor;
+  guint application_check_id;
   GtkWidget *preferences_dialog;
 
   GtkAccelGroup *accel_group;
@@ -1102,6 +1110,10 @@ terminal_window_init (TerminalWindow *window)
 
   window->priv->preferences = terminal_preferences_get ();
   window->priv->build_monitor = terminal_build_monitor_get ();
+  window->priv->application_monitor = terminal_application_monitor_new ();
+  window->priv->application_check_id = g_timeout_add_seconds (2, terminal_window_application_check, window);
+  g_signal_connect_object (window->priv->application_monitor, "changed",
+                           G_CALLBACK (terminal_window_application_changed), window, 0);
   g_signal_connect_object (window->priv->build_monitor, "changed",
                            G_CALLBACK (terminal_window_build_changed), window, 0);
   g_signal_connect (window, "destroy", G_CALLBACK (terminal_window_build_disconnected), NULL);
@@ -1264,6 +1276,9 @@ terminal_window_finalize (GObject *object)
 {
   TerminalWindow *window = TERMINAL_WINDOW (object);
 
+  if (window->priv->application_check_id != 0)
+    g_source_remove (window->priv->application_check_id);
+
   /* disconnect prefs signal handlers */
   g_signal_handlers_disconnect_by_func (G_OBJECT (window->priv->preferences),
                                         G_CALLBACK (terminal_window_update_mnemonic_modifier), window);
@@ -1278,6 +1293,7 @@ terminal_window_finalize (GObject *object)
     }
   g_object_unref (G_OBJECT (window->priv->preferences));
   g_clear_object (&window->priv->build_monitor);
+  g_clear_object (&window->priv->application_monitor);
   g_object_unref (G_OBJECT (window->priv->accel_group));
   g_object_unref (G_OBJECT (window->priv->encoding_action));
 
@@ -1714,6 +1730,10 @@ terminal_window_notebook_page_switched (GtkNotebook *notebook,
       /* store last and set new active tab */
       window->priv->last_active = window->priv->active;
       window->priv->active = active;
+
+      terminal_application_monitor_set_target (window->priv->application_monitor,
+                                               terminal_screen_get_pty_fd (active),
+                                               terminal_screen_get_child_pid (active));
 
       /* set the new window title */
       terminal_window_notify_title (active, NULL, window);
@@ -2211,17 +2231,48 @@ terminal_window_notify_title (TerminalScreen *screen,
 {
   gchar *title;
   gchar *caption;
+  gchar *application_title;
 
   /* update window title */
   if (screen != NULL && screen == window->priv->active)
     {
       title = terminal_screen_get_title (window->priv->active);
-      caption = terminal_build_title_format (title, _("Terminal"),
+      terminal_application_monitor_set_target (window->priv->application_monitor,
+                                               terminal_screen_get_pty_fd (screen),
+                                               terminal_screen_get_child_pid (screen));
+      application_title = terminal_application_monitor_format_title (window->priv->application_monitor, title);
+      caption = terminal_build_title_format (application_title, _("Terminal"),
                                              terminal_build_monitor_is_stale (window->priv->build_monitor));
       gtk_window_set_title (GTK_WINDOW (window), caption);
       g_free (caption);
+      g_free (application_title);
       g_free (title);
     }
+}
+
+static gboolean
+terminal_window_application_check (gpointer data)
+{
+  TerminalWindow *window = data;
+  TerminalScreen *screen = window->priv->active;
+
+  if (screen != NULL)
+    {
+      terminal_application_monitor_set_target (window->priv->application_monitor,
+                                               terminal_screen_get_pty_fd (screen),
+                                               terminal_screen_get_child_pid (screen));
+      terminal_application_monitor_refresh (window->priv->application_monitor);
+    }
+  else
+    terminal_application_monitor_set_target (window->priv->application_monitor, -1, -1);
+  return G_SOURCE_CONTINUE;
+}
+
+static void
+terminal_window_application_changed (TerminalApplicationMonitor *monitor,
+                                     TerminalWindow *window)
+{
+  terminal_window_notify_title (window->priv->active, NULL, window);
 }
 
 
@@ -2242,6 +2293,14 @@ terminal_window_build_disconnected (TerminalWindow *window,
   /* A destroyed GtkWindow can outlive its notebook when another owner holds a ref. */
   g_signal_handlers_disconnect_by_func (window->priv->build_monitor,
                                         G_CALLBACK (terminal_window_build_changed), window);
+  g_signal_handlers_disconnect_by_func (window->priv->application_monitor,
+                                        G_CALLBACK (terminal_window_application_changed), window);
+  terminal_application_monitor_set_target (window->priv->application_monitor, -1, -1);
+  if (window->priv->application_check_id != 0)
+    {
+      g_source_remove (window->priv->application_check_id);
+      window->priv->application_check_id = 0;
+    }
 }
 
 

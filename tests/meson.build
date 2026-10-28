@@ -18,6 +18,23 @@ build_monitor_test = executable(
 
 test('terminal-build-monitor', build_monitor_test, timeout: 90, env: {'GIO_USE_VFS': 'local'})
 
+application_fixture = executable('application-monitor-child',
+  'fixtures/application-monitor-child.c', c_args: ['-DFIXTURE_VERSION=1'], install: false)
+application_fixture_next = executable('application-monitor-child-next',
+  'fixtures/application-monitor-child.c', c_args: ['-DFIXTURE_VERSION=2'], install: false)
+application_monitor_test = executable('test-terminal-application-monitor',
+  'test-terminal-application-monitor.c',
+  '../terminal/terminal-application-monitor.c',
+  '../terminal/terminal-build-monitor.c',
+  '../terminal/terminal-build-id.c',
+  '../terminal/terminal-tmux.c',
+  c_args: ['-DAPPLICATION_FIXTURE="' + application_fixture.full_path() + '"',
+           '-DAPPLICATION_FIXTURE_NEXT="' + application_fixture_next.full_path() + '"'],
+  include_directories: include_directories('..'), dependencies: [glib, gio])
+test('terminal-application-monitor', application_monitor_test,
+  depends: [application_fixture, application_fixture_next], timeout: 60,
+  env: {'GIO_USE_VFS': 'local'})
+
 mouse_test = executable(
   'test-terminal-mouse',
   'test-terminal-mouse.c',
@@ -84,6 +101,7 @@ copy_test = executable(
   'test-terminal-launching.c',
   'test-terminal-update.c',
   '../terminal/terminal-app.c',
+  '../terminal/terminal-application-monitor.c',
   '../terminal/terminal-build-id.c',
   '../terminal/terminal-build-monitor.c',
   '../terminal/terminal-encoding-action.c',
@@ -105,6 +123,8 @@ copy_test = executable(
   terminal_enum_source,
   xfce_revision_h[0],
   c_args: ['-DTEST_TERMINAL_BINARY="' + (meson.current_build_dir() / '../terminal/xfce4-terminal') + '"',
+           '-DAPPLICATION_FIXTURE="' + application_fixture.full_path() + '"',
+           '-DAPPLICATION_FIXTURE_NEXT="' + application_fixture_next.full_path() + '"',
            '-DTEST_UPDATE_WORKER="' + (meson.current_source_dir() / 'fixtures/update_worker.py') + '"'],
   include_directories: [include_directories('..'), include_directories('../terminal')],
   dependencies: [
@@ -114,8 +134,8 @@ copy_test = executable(
 )
 
 # Native clipboard ownership must not race other GUI tests on the same display.
-test('terminal-copy', copy_test, depends: terminal_executable,
-  timeout: 60, is_parallel: false, env: {'TERM': 'xterm-256color'})
+test('terminal-copy', copy_test, depends: [terminal_executable, application_fixture, application_fixture_next],
+  timeout: 75, is_parallel: false, env: {'TERM': 'xterm-256color'})
 
 test('fork-versioning', find_program('python3'),
   args: files('test-fork-version.py'), timeout: 120)

@@ -3230,6 +3230,16 @@ terminal_screen_get_child_pid (TerminalScreen *screen)
 
 
 gint
+terminal_screen_get_pty_fd (TerminalScreen *screen)
+{
+  VtePty *pty;
+
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), -1);
+  pty = vte_terminal_get_pty (VTE_TERMINAL (screen->terminal));
+  return pty != NULL ? vte_pty_get_fd (pty) : -1;
+}
+
+gint
 terminal_screen_get_foreground_process_group (TerminalScreen *screen)
 {
   VtePty *pty;

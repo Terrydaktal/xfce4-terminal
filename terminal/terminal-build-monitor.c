@@ -87,6 +87,8 @@ terminal_build_monitor_class_init (TerminalBuildMonitorClass *klass)
   G_OBJECT_CLASS (klass)->finalize = terminal_build_monitor_finalize;
   g_signal_new ("changed", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
                 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+  g_signal_new ("checked", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
+                0, NULL, NULL, NULL, G_TYPE_NONE, 0);
 }
 
 static void
@@ -297,6 +299,7 @@ check_finished (GObject *object,
     monitor->stale = stale;
   if (changed)
     g_signal_emit_by_name (monitor, "changed");
+  g_signal_emit_by_name (monitor, "checked");
   if (monitor->check_again)
     {
       monitor->check_again = FALSE;
@@ -359,6 +362,19 @@ terminal_build_monitor_new (const gchar *running_executable,
 
   g_free (id);
   return monitor;
+}
+
+TerminalBuildMonitor *
+terminal_build_monitor_new_for_id (const gchar *running_id,
+                                   const gchar *launch_path)
+{
+  return monitor_new (running_id, launch_path, TERMINAL_BUILD_LAUNCH_EXECUTABLE);
+}
+
+gboolean
+terminal_build_monitor_is_known (TerminalBuildMonitor *monitor)
+{
+  return monitor->last_check != NULL && monitor->last_check->id != NULL;
 }
 
 void

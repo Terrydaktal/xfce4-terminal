@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "scope": "Application-owned running code is identified locally; xfce4-terminal owns only build comparison and title decoration, independently of its terminal-build marker.",
+  "environments": {
+    "processes": "Linux /proc, private PTYs, two real native ELF fixtures with different GNU build IDs, private tmux socket/server",
+    "gui": "Real TerminalWindow/TerminalScreen/VTE under isolated xfconf/session bus and Xvfb; no user terminals restarted"
+  },
+  "test_owners": {
+    "processes": "tests/test-terminal-application-monitor.c",
+    "gui": "tests/test-terminal-copy.c",
+    "fixtures": "tests/fixtures/application-monitor-child.c"
+  },
+  "contracts": [
+    {
+      "id": "APP-BUILD-01",
+      "behavior": "A replaced executable marks the still-running old build; rolling back the same build clears the mark. A new inode with the same build ID is not an update.",
+      "tests": ["/application/replacement-and-rollback", "/application/identical-build-new-inode"]
+    },
+    {
+      "id": "APP-BUILD-02",
+      "behavior": "Re-exec in the same PID invalidates the cached running image and clears the outdated label when the new build starts.",
+      "tests": ["/application/exec-in-same-pid"]
+    },
+    {
+      "id": "APP-BUILD-03",
+      "behavior": "A unique native child of a runtime wrapper is monitored. Multiple native children, remote sessions and interpreter-only programs are unknown, not guessed.",
+      "tests": ["/application/native-child-of-runtime", "/application/ambiguous-runtime-children", "/application/native-plus-interpreted-ambiguous", "/application/interpreted-unknown", "/application/remote-unknown"]
+    },
+    {
+      "id": "APP-BUILD-08",
+      "behavior": "A script/partial non-ELF replacement is not probed by executing it, does not establish an outdated build, and a later valid native replacement is still detected.",
+      "tests": ["/application/invalid-candidate-never-executed"]
+    },
+    {
+      "id": "APP-BUILD-04",
+      "behavior": "Retain an identified launch symlink so retargeting it is detected without executing candidate code or relying on the terminal's PATH.",
+      "tests": ["/application/launch-symlink-retarget"]
+    },
+    {
+      "id": "APP-BUILD-05",
+      "behavior": "Only the attached tmux client's active pane is monitored; changing pane/window/application clears the previous marker.",
+      "tests": ["/application/tmux-active-pane"]
+    },
+    {
+      "id": "APP-BUILD-06",
+      "behavior": "Tab changes discard pending worker results and detach old binary watches. No worker callback updates a destroyed window.",
+      "tests": ["/application/stale-task-after-tab-switch", "/terminal/title/active-application-build"]
+    },
+    {
+      "id": "APP-BUILD-07",
+      "behavior": "Decorate only an explicit application label or prepend a new label, preserve raw OSC titles and unrelated path/text components, normalize legacy strokes idempotently, and keep Terminal's independent marker.",
+      "tests": ["/application/title-format", "/terminal/title/active-application-build", "/terminal/title/stale-build-and-rollback"]
+    }
+  ]
+}

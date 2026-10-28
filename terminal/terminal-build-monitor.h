@@ -26,6 +26,14 @@ terminal_build_monitor_new (const gchar *running_executable,
                             const gchar *launch_path,
                             TerminalBuildLaunchKind kind);
 
+/* The caller has already read the running image off the GUI thread. */
+TerminalBuildMonitor *
+terminal_build_monitor_new_for_id (const gchar *running_id,
+                                   const gchar *launch_path);
+
+gboolean
+terminal_build_monitor_is_known (TerminalBuildMonitor *monitor);
+
 gboolean
 terminal_build_monitor_is_stale (TerminalBuildMonitor *monitor);
 
