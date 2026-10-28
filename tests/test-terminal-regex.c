@@ -74,6 +74,64 @@ test_url_wrapping (void)
 }
 
 static void
+test_listing_boundaries (void)
+{
+  const gchar *paths[] = { ".debug/", "models/", "./.debug/", "/tmp/.debug/", "~/artifacts/", "artifacts/anatomy-" };
+  const gchar *modes[] = {
+    "drwxr-xr-x", "-rw-r--r--", "lrwxrwxrwx", "crw-rw----", "brw-rw----",
+    "prw-------", "srwxrwxrwx", "drwxr-xr-x+", "drwxr-xr-x.", "drwxr-xr-x@",
+    "-rwsr-Sr-T", "-rwxrwxrwt",
+  };
+  const gchar *breaks[] = { "\n", "\r\n", "\n    ", "\r\n\t" };
+  const gchar *patterns[] = { REGEX_FILE_PATH, REGEX_URL_FILE, REGEX_URL_AS_IS };
+  const gchar *prefixes[] = { "", "file:///tmp/", "https://example.com/" };
+
+  for (guint pattern = 0; pattern < G_N_ELEMENTS (patterns); pattern++)
+    {
+      pcre2_code *code = compile_pattern (patterns[pattern]);
+      for (guint path = 0; path < G_N_ELEMENTS (paths); path++)
+        for (guint mode = 0; mode < G_N_ELEMENTS (modes); mode++)
+          for (guint line_break = 0; line_break < G_N_ELEMENTS (breaks); line_break++)
+            for (guint metadata = 0; metadata < 2; metadata++)
+              {
+                gchar *text = g_strconcat (prefixes[pattern], paths[path], breaks[line_break], modes[mode],
+                                           metadata ? " 2 lewis 6.1G 8 Sep 01:27 .config/" : "", NULL);
+                PCRE2_SIZE start, end;
+                gint result = match (code, text, &start, &end);
+
+                if (result < 0 || start != 0 || end != strlen (prefixes[pattern]) + strlen (paths[path]))
+                  g_test_message ("listing boundary: %s", text);
+                g_assert_cmpint (result, >=, 0);
+                g_assert_cmpuint (start, ==, 0);
+                g_assert_cmpuint (end, ==, strlen (prefixes[pattern]) + strlen (paths[path]));
+                g_free (text);
+              }
+      pcre2_code_free (code);
+    }
+}
+
+static void
+test_permission_like_path_components (void)
+{
+  pcre2_code *code = compile_pattern (REGEX_FILE_PATH);
+  const gchar *cases[] = {
+    ".debug/", "models/", "exports/reports/",
+    "artifacts/\n    drwxr-xr-x-notes.txt",
+    "artifacts/\r\ndrwxr-xr-x.json",
+    "artifacts/anatomy-\n  drwxr-xr-x-notes/report.json",
+  };
+
+  for (guint i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      PCRE2_SIZE start, end;
+      g_assert_cmpint (match (code, cases[i], &start, &end), >=, 0);
+      g_assert_cmpuint (start, ==, 0);
+      g_assert_cmpuint (end, ==, strlen (cases[i]));
+    }
+  pcre2_code_free (code);
+}
+
+static void
 test_file_path_fragments (void)
 {
   pcre2_code *code = compile_pattern (REGEX_FILE_PATH);
@@ -204,6 +262,8 @@ main (int argc,
   g_test_add_func ("/regex/url/wrapped-boundary", test_url_wrapping);
   g_test_add_func ("/regex/path/boundaries", test_file_path_boundaries);
   g_test_add_func ("/regex/path/hyphen-wrapping", test_file_path_hyphen_wrapping);
+  g_test_add_func ("/regex/path/listing-boundaries", test_listing_boundaries);
+  g_test_add_func ("/regex/path/permission-like-components", test_permission_like_path_components);
   g_test_add_func ("/regex/path/fragments", test_file_path_fragments);
   return g_test_run ();
 }

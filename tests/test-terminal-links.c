@@ -9,6 +9,7 @@
 #include "terminal-test-utils.h"
 
 static gchar *self;
+static const gchar listing_prefix[] = "drwxr-xr-x 6.1G lewis 8 Sep 01:27 ";
 
 static gboolean
 wait_for_text (VteTerminal *terminal, const gchar *expected)
@@ -123,6 +124,52 @@ expect_open (const gchar *log, const gchar *expected)
 }
 
 static void
+check_listing_boundaries (Fixture *fixture, const gchar *kind, const gchar *pane)
+{
+  gboolean osc8 = strstr (kind, "osc8") != NULL;
+  gboolean uri_label = strstr (kind, "uri") != NULL;
+  gchar *directory = g_build_filename (pane, ".debug", NULL);
+  gchar *uri = g_filename_to_uri (directory, NULL, NULL);
+  gchar *display = uri_label ? g_strconcat (uri, "/", NULL) : g_strdup (".debug/");
+
+  for (guint step = 0; step < 3; step++)
+    {
+      /* Check permissions both before and after hovering the preceding link. */
+      gboolean on_link = step == 1;
+      GdkEvent *event = pointer_event_at (fixture, GDK_ENTER_NOTIFY, 0,
+                                         on_link ? strlen (listing_prefix) + 3.5 : 3.5,
+                                         on_link ? 0.5 : 1.5);
+      gint tag;
+      gchar *match;
+
+      gtk_widget_event (fixture->widget, event);
+      gdk_event_free (event);
+      event = pointer_event_at (fixture, GDK_BUTTON_PRESS, 0,
+                                 on_link ? strlen (listing_prefix) + 3.5 : 3.5,
+                                 on_link ? 0.5 : 1.5);
+      match = on_link && osc8 ? vte_terminal_hyperlink_check_event (fixture->terminal, event)
+                             : vte_terminal_match_check_event (fixture->terminal, event, &tag);
+      g_assert_cmpstr (match, ==, on_link ? (osc8 ? uri : display) : NULL);
+      g_free (match);
+      if (!on_link)
+        {
+          match = vte_terminal_hyperlink_check_event (fixture->terminal, event);
+          g_assert_null (match);
+        }
+      gdk_event_free (event);
+    }
+
+  click_position (fixture, 0, strlen (listing_prefix) + 3.5, 0.5, GDK_2BUTTON_PRESS);
+  gchar *selection = vte_terminal_get_text_selected (fixture->terminal, VTE_FORMAT_TEXT);
+  g_assert_cmpstr (selection, ==, display);
+  vte_terminal_unselect_all (fixture->terminal);
+  g_free (selection);
+  g_free (display);
+  g_free (uri);
+  g_free (directory);
+}
+
+static void
 links_through_tmux (Fixture *fixture, gconstpointer data)
 {
   const gchar *kind = data;
@@ -173,8 +220,16 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
                     || g_strcmp0 (kind, "editor-wrapper-native") == 0;
   gboolean separate = g_strcmp0 (kind, "wrapped-separate") == 0;
   gboolean wrapped_osc8 = g_strcmp0 (kind, "wrapped-osc8") == 0;
+  gboolean listing = g_str_has_prefix (kind, "listing-");
+  if (listing && g_str_has_suffix (kind, "-native"))
+    native = TRUE;
   gdouble click_column = pi ? 10.5 : hyphen_top ? 113.5 : wrapped ? separate ? 58.5 : 8.5 : selected ? 55.5 : 3.5;
   gdouble click_row = wrapped && !hyphen_top ? 1.5 : 0.5;
+  if (listing)
+    {
+      click_column = strlen (listing_prefix) + 3.5;
+      click_row = 1.5;
+    }
   GAppInfo *handler;
   GError *error = NULL;
   pid_t child;
@@ -219,7 +274,7 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
   g_assert_true (g_app_info_set_as_default_for_type (handler, "application/vnd.sqlite3", &error));
   g_assert_no_error (error);
   g_object_set (fixture->preferences,
-                "misc-prefer-mouse-selection", FALSE,
+                "misc-prefer-mouse-selection", listing,
                 "misc-highlight-urls", TRUE,
                 "misc-auto-detect-file-paths", TRUE,
                 "misc-auto-detect-file-path-apps", allowlist,
@@ -229,7 +284,7 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
                 "misc-hyperlink-file-manager", manager,
                 NULL);
 
-  if (wrapped)
+  if (wrapped || listing)
     {
       gtk_window_resize (GTK_WINDOW (fixture->window), 1600, 240);
       settle ();
@@ -293,6 +348,8 @@ links_through_tmux (Fixture *fixture, gconstpointer data)
       _exit (127);
     }
   g_assert_true (wait_for_text (fixture->terminal, "LINK-READY"));
+  if (listing)
+    check_listing_boundaries (fixture, kind, pane);
   if (wrapper)
     {
       pid_t group = native ? tcgetpgrp (vte_pty_get_fd (vte_terminal_get_pty (fixture->terminal)))
@@ -529,7 +586,23 @@ main (int argc, char **argv)
       tcsetattr (0, TCSANOW, &attrs);
       path = g_build_filename (argv[2], "link file.txt", NULL);
       uri = g_filename_to_uri (path, NULL, NULL);
-      if (g_strcmp0 (argv[3], "osc8") == 0 || g_strcmp0 (argv[3], "editor-osc8") == 0)
+      if (g_str_has_prefix (argv[3], "listing-"))
+        {
+          gchar *directory = g_build_filename (argv[2], ".debug", NULL);
+          gchar *directory_uri = g_filename_to_uri (directory, NULL, NULL);
+          if (g_mkdir (directory, 0700) != 0)
+            return 1;
+          if (strstr (argv[3], "osc8") != NULL)
+            output = g_strdup_printf ("\033[H\033[2J%s\033[34m\033]8;;%s\033\\.debug/\033]8;;\033\\\033[0m\r\n%s./source.txt\r\nLINK-READY",
+                                      listing_prefix, directory_uri, listing_prefix);
+          else
+            output = g_strdup_printf ("\033[H\033[2J%s\033[34m%s/\033[0m\r\n%s./source.txt\r\nLINK-READY",
+                                      listing_prefix, strstr (argv[3], "uri") != NULL ? directory_uri : ".debug",
+                                      listing_prefix);
+          g_free (directory_uri);
+          g_free (directory);
+        }
+      else if (g_strcmp0 (argv[3], "osc8") == 0 || g_strcmp0 (argv[3], "editor-osc8") == 0)
         output = g_strdup_printf ("\033[H\033[2J\033]8;;%s\033\\FILE-LINK\033]8;;\033\\\r\nLINK-READY", uri);
       else if (g_str_has_prefix (argv[3], "pi-"))
         {
@@ -626,6 +699,12 @@ main (int argc, char **argv)
   g_test_add ("/links/tmux/wrapped-hyphen-top", Fixture, "wrapped-hyphen-top", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/wrapped-hyphen-click", Fixture, "wrapped-hyphen-click", setup, links_through_tmux, teardown);
   g_test_add ("/links/native/wrapped-hyphen-hover", Fixture, "wrapped-hyphen-native", setup, links_through_tmux, teardown);
+  g_test_add ("/links/native/listing", Fixture, "listing-native", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/listing", Fixture, "listing-tmux", setup, links_through_tmux, teardown);
+  g_test_add ("/links/native/listing-osc8", Fixture, "listing-osc8-native", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/listing-osc8", Fixture, "listing-osc8-tmux", setup, links_through_tmux, teardown);
+  g_test_add ("/links/native/listing-uri", Fixture, "listing-uri-native", setup, links_through_tmux, teardown);
+  g_test_add ("/links/tmux/listing-uri", Fixture, "listing-uri-tmux", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/relative-fragment", Fixture, "relative-fragment", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/parenthesized-fragment", Fixture, "parenthesized-fragment", setup, links_through_tmux, teardown);
   g_test_add ("/links/tmux/selected-fragment", Fixture, "selected-fragment", setup, links_through_tmux, teardown);

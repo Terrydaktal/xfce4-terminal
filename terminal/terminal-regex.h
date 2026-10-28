@@ -125,11 +125,16 @@
 /* Optional colon-prefixed port, e.g. ":1080", "" */
 #define PORT "(?x: \\:" N_1_65535 " )?"
 
+/* A permission-prefixed listing row is a separate entry, not a path fragment.
+ * Require a complete mode token so names such as drwxr-xr-x-notes still wrap. */
+#define PATH_LISTING_PERMISSIONS "(?x: [bcdlpsD?-] [r-] [w-] [xSs-] [r-] [w-] [xSs-] [r-] [w-] [xTt-] [.+@]? (?= [[:space:]] | $ ) )"
+#define PATH_ROW_BREAK "(?: \\r? \\n (?! [[:blank:]]* " PATH_LISTING_PERMISSIONS " ) )"
+
 /* Omit the parentheses, see below. A newline is accepted only when it does
  * not begin another URL and the next terminal line contains URI punctuation.
  * This supports wrapped paths such as `nvidi\\na/inc` without absorbing an
  * unrelated prose line. */
-#define PATHCHARS_CLASS "(?: [-[:alnum:]\\Q_$.+!*,:;@&=?/~#|%'\\E] | \\r?\\n (?! [[:space:]]* (?: (?i:https?|ftp|file):\\/\\/ | www\\. ) ) (?=[^[:space:][:cntrl:]]*[\\/?#=&%._~-]) )"
+#define PATHCHARS_CLASS "(?: [-[:alnum:]\\Q_$.+!*,:;@&=?/~#|%'\\E] | " PATH_ROW_BREAK " (?! [[:space:]]* (?: (?i:https?|ftp|file):\\/\\/ | www\\. ) ) (?=[^[:space:][:cntrl:]]*[\\/?#=&%._~-]) )"
 /* Chars to end a URL. Apostrophe only allowed if there wasn't one in front of the URL, see bug 448044 */
 #define PATHTERM_CLASS "[-[:alnum:]\\Q_$+*:@&=/~#|%'\\E]"
 #define PATHTERM_NOAPOS_CLASS "[-[:alnum:]\\Q_$+*:@&=/~#|%\\E]"
@@ -164,15 +169,16 @@
  * Accept a row boundary after '/' or a hyphen inside a slashed path. Keep the
  * hyphen: applications can wrap at it without inserting a new path character.
  * Bare filenames do not get the hyphen-wrap rule, to avoid joining prose.
+ * Permission-prefixed listing rows start a separate entry, never a continuation.
  * Wrapped candidates must resolve to an existing path before they are opened.
  */
 #define FILE_PATH_CHARS "[-[:alnum:]_~.+@]"
 #define FILE_PATH_PAREN_DEF "(?<FILE_PATH_PAREN>\\( (?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) )* \\) )"
 #define FILE_PATH_COMPONENT "(?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) )+"
 #define FILE_PATH_COMPONENT_NONGREEDY "(?: " FILE_PATH_CHARS " | (?&FILE_PATH_PAREN) )+?"
-#define FILE_PATH_WRAPPED_COMPONENT "(?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) | (?<= - ) \\r? \\n [[:blank:]]* (?= " FILE_PATH_CHARS " ) )+"
-#define FILE_PATH_SEPARATOR "(?: / (?: \\r? \\n [[:blank:]]* )? )"
-#define FILE_PATH_SLASHED "(?: (?: " FILE_PATH_SEPARATOR " | ~ " FILE_PATH_SEPARATOR " | \\.{1,2} " FILE_PATH_SEPARATOR " ) " FILE_PATH_WRAPPED_COMPONENT " (?: " FILE_PATH_SEPARATOR " " FILE_PATH_WRAPPED_COMPONENT " )* (?: " FILE_PATH_SEPARATOR " )? | (?: " FILE_PATH_WRAPPED_COMPONENT " " FILE_PATH_SEPARATOR " )+ " FILE_PATH_WRAPPED_COMPONENT " )"
+#define FILE_PATH_WRAPPED_COMPONENT "(?: " FILE_PATH_CHARS "++ | (?&FILE_PATH_PAREN) | (?<= - ) " PATH_ROW_BREAK " [[:blank:]]* (?= " FILE_PATH_CHARS " ) )+"
+#define FILE_PATH_SEPARATOR "(?: / (?: " PATH_ROW_BREAK " [[:blank:]]* )? )"
+#define FILE_PATH_SLASHED "(?: (?: " FILE_PATH_SEPARATOR " | ~ " FILE_PATH_SEPARATOR " | \\.{1,2} " FILE_PATH_SEPARATOR " ) " FILE_PATH_WRAPPED_COMPONENT " (?: " FILE_PATH_SEPARATOR " " FILE_PATH_WRAPPED_COMPONENT " )* (?: " FILE_PATH_SEPARATOR " )? | (?: " FILE_PATH_WRAPPED_COMPONENT " " FILE_PATH_SEPARATOR " )+ (?: " FILE_PATH_WRAPPED_COMPONENT " )? )"
 /* Keep an anchor with its path, including inside prose/tool parentheses. */
 #define FILE_PATH_FRAGMENT "(?: \\# [-[:alnum:]_~.+@%:/?&=#]* )?"
 /* A final ')' is treated as surrounding prose. This intentionally favors

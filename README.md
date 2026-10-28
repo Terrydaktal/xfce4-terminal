@@ -59,6 +59,15 @@ The process-group traversal has a 50 ms fail-closed budget and does not run
 during output, ordinary typing or pointer movement. VTE's regex underlining
 is independent of this click-time policy.
 
+Local paths can continue across rows after a slash or a hyphen in a slashed
+path, including indented continuations. A row beginning with a complete Unix
+permission token such as `drwxr-xr-x` is treated as a separate listing entry,
+not a continuation of the preceding directory. This also applies to displayed
+`file://` and other URI matches, without changing explicit OSC 8 targets.
+Relative directory labels such as `.debug/` are recognized on their own.
+The boundary guard uses only the displayed text, without filesystem or process
+lookups during hover.
+
 For local tmux clients launched with an explicit absolute `-S` socket (including
 tmux-simple), path resolution now follows that client's active pane. A bounded
 read-only query to the same tmux binary maps the client PID to its pane; `/proc`
@@ -79,7 +88,7 @@ for normal application clicks and scrolling.
 
 The `test-terminal-links` build target exercises those actions through an actual
 tmux-simple server, a real widget, and temporary application/file-manager
-recorders. It is driven by `~/Dev/tmux-simple/tests/test_hyperlinks.py` with a
+recorders. It is driven by `~/repos/tmux/tests/test_hyperlinks.py` with a
 private HOME/XDG tree, Xvfb and D-Bus; it must not run against the real desktop.
 
 Double-clicking an OSC 8 hyperlink or an automatically detected link selects its
