@@ -9,9 +9,11 @@
 #include "terminal/terminal-build-monitor.h"
 #include "terminal/terminal-screen.h"
 #include "terminal/terminal-window.h"
+#include "terminal/terminal-update.h"
 
 #include "terminal-test-utils.h"
 #include "test-terminal-launching.h"
+#include "test-terminal-update.h"
 
 static gchar *self;
 static gchar *build_directory;
@@ -593,6 +595,79 @@ window_build_title (Fixture *fixture,
   g_free (expected);
 }
 
+static void
+wait_update_item (GtkWidget *item, gboolean sensitive)
+{
+  TerminalBuildMonitor *monitor = terminal_build_monitor_get ();
+  gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+
+  terminal_build_monitor_refresh (monitor);
+  while (gtk_widget_get_sensitive (item) != sensitive && g_get_monotonic_time () < deadline)
+    settle ();
+  g_assert_cmpint (gtk_widget_get_sensitive (item), ==, sensitive);
+  g_object_unref (monitor);
+}
+
+static void
+update_context_menu (Fixture *fixture, gconstpointer data)
+{
+  TerminalScreen *screen = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
+  GtkWidget *menu = NULL;
+  GtkWidget *update = NULL;
+  GList *items;
+  g_signal_emit_by_name (screen, "get-context-menu", &menu);
+  g_assert_nonnull (menu);
+  g_object_ref_sink (menu);
+  items = gtk_container_get_children (GTK_CONTAINER (menu));
+  for (GList *item = items; item != NULL; item = item->next)
+    if (g_strcmp0 (gtk_menu_item_get_label (item->data), "_Update in Place") == 0)
+      update = item->data;
+  g_list_free (items);
+  g_assert_nonnull (update);
+  g_assert_false (gtk_widget_get_sensitive (update));
+  gtk_menu_item_activate (GTK_MENU_ITEM (update));
+  g_assert_false (terminal_update_is_pending (GTK_WINDOW (fixture->window)));
+
+  /* An open menu follows availability, independently of the stale-title state. */
+  replace_build_candidate ("/usr/bin/true");
+  wait_update_item (update, TRUE);
+  g_assert_cmpint (g_chmod (build_candidate, 0600), ==, 0);
+  wait_update_item (update, FALSE);
+  g_assert_cmpint (g_chmod (build_candidate, 0700), ==, 0);
+  wait_update_item (update, TRUE);
+  replace_build_candidate ("/dev/null");
+  wait_update_item (update, FALSE);
+  gtk_menu_item_activate (GTK_MENU_ITEM (update));
+  g_assert_false (terminal_update_is_pending (GTK_WINDOW (fixture->window)));
+  replace_build_candidate ("/usr/bin/true");
+  wait_update_item (update, TRUE);
+  g_assert_cmpint (g_unlink (build_candidate), ==, 0);
+  wait_update_item (update, FALSE);
+  replace_build_candidate (self);
+  wait_update_item (update, FALSE);
+  replace_build_candidate ("/usr/bin/true");
+  wait_update_item (update, TRUE);
+  gtk_menu_item_activate (GTK_MENU_ITEM (update));
+  g_assert_true (terminal_update_is_pending (GTK_WINDOW (fixture->window)));
+  gtk_widget_destroy (menu);
+  g_object_unref (menu);
+  replace_build_candidate (self);
+  gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+  while (terminal_update_is_pending (GTK_WINDOW (fixture->window)) && g_get_monotonic_time () < deadline)
+    {
+      while (g_main_context_iteration (NULL, FALSE))
+        ;
+      g_usleep (1000);
+    }
+  g_assert_false (terminal_update_is_pending (GTK_WINDOW (fixture->window)));
+  g_assert_true (gtk_widget_get_visible (fixture->window));
+  GList *windows = gtk_window_list_toplevels ();
+  for (GList *item = windows; item != NULL; item = item->next)
+    if (GTK_IS_DIALOG (item->data) && gtk_window_get_transient_for (item->data) == GTK_WINDOW (fixture->window))
+      gtk_widget_destroy (item->data);
+  g_list_free (windows);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -615,7 +690,9 @@ main (int argc, char **argv)
   g_assert_null (g_getenv ("XFCE4_TERMINAL_LAUNCH_KIND"));
   if (!gtk_init_check (&argc, &argv))
     return 77;
+  terminal_update_register_tests (build_candidate);
   terminal_launching_register_tests ();
+  g_test_add ("/terminal/update/context-menu", Fixture, NULL, setup_window, update_context_menu, teardown);
   g_test_add ("/terminal/title/stale-build-and-rollback", Fixture, NULL,
               setup_window, window_build_title, teardown);
   g_test_add ("/terminal/copy/native-selection", Fixture, NULL,

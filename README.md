@@ -142,6 +142,68 @@ are consumed before GTK starts and are not passed to the shell. Opening a window
 with this rebuilt version enables the checker; already-running older binaries
 cannot acquire it without restarting.
 
+### Update in Place
+
+Right-click anywhere in a normal terminal window and choose **Update in Place**
+to replace that whole window with the current local launch target. The action
+is greyed out when the target matches the running build, has not been checked
+yet, or is missing, incomplete, unreadable or not executable. An open menu tracks
+the build monitor's background availability checks; no disk reads or version
+commands run on the GTK thread. The stale title can remain marked while an
+update target is temporarily unavailable, but the restart action stays disabled.
+
+The terminal owns the entire operation. It starts its bundled, short-lived
+`terminal/update/terminal-update-helper.py` worker in an independent systemd user
+scope. No Application Launcher process, service, script, database or configuration
+is needed. The helper requires system Python 3.11+, PyGObject/Gio and KWin on the
+session bus. A temporary KWin script captures and restores this window's placement
+and supported state; it installs no persistent script or shortcut. Drop-down
+terminals and windows whose saved normal geometry cannot be recovered are refused.
+
+Every tmux tab reattaches to its exact surviving server/session. The replacement
+is verified before the original closes, so programs inside tmux stay running.
+For non-tmux or mixed windows, a confirmation explains that other programs will
+restart/resume and terminal scrollback, shell variables and unsaved/in-flight
+work will be lost. Supported replay includes Fish/Bash/Zsh shells, htop, nvtop,
+Antigravity continuation and Codex's exact recoverable session ID. Arbitrary
+programs, SSH jobs, incomplete metadata and ambiguous window identities are
+refused rather than guessed. An ordinary app cannot have its process memory
+transferred into a new terminal.
+
+The helper saves private recovery commands and placement metadata under
+`$XDG_STATE_HOME/xfce4-terminal/updates/` (normally
+`~/.local/state/xfce4-terminal/updates/`). Each JSON backup lists the executable,
+tab working directories and literal application argument arrays; logs and final
+`.status.json` reports are stored beside it. If resume fails after the original
+closes, the helper reports that failure in its own dialog. Existing Application
+Launcher snapshots are neither required nor deleted.
+The replacement starts minimized. Its binary, tab identities, startup gates and
+placement must verify before the original closes. Non-tmux programs cannot execute
+until their original processes have exited; tmux reattaches to the exact live
+session first. No process is force-killed. Failures report the actual mismatch,
+including early process exit and its error output, instead of only a generic timeout.
+An unchanged monitor preserves exact coordinates, even beyond a screen edge.
+Missing/changed monitor metadata, tab/process changes or a retargeted launch entry
+invalidate the operation. This is restart/resume, not migration of process memory.
+
+Preparation and progress checks run off the GTK thread and only after invoking
+the action. Duplicate clicks do not start duplicate updates. The request
+is bound to this process's lifetime window UUID and a private helper bus owner.
+Only that helper can authorize closing this window. Replacements preserve the launch
+entry metadata, including a symlink to the repository wrapper, for future build
+checks and updates. This does not fetch Git updates or build the source: rebuild
+first with `meson compile -C build`.
+
+The terminal's existing D-Bus interface adds `GetUpdateStatus(window_uuid)` and
+`UpdateInPlace(window_uuid)`. The latter returns a terminal-owned update-service
+name; clients may observe its `GetStatus()` result but cannot bypass the terminal's
+non-tmux confirmation. Application Launcher may use these APIs as an optional
+bulk-request client; it no longer owns replacement or placement. Old binaries lack
+this protocol and need one manual restart after this migration. Later updates use
+the terminal-owned workflow. Isolated GTK tests use a private bus and Xvfb; helper
+tests use fake placement backends and real disposable startup gates. They do not
+replace the user's desktop windows.
+
 ### Local Path Hyperlinks
 
 This fork can detect local file paths in output when the foreground PTY

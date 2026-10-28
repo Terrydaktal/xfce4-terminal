@@ -1,0 +1,284 @@
+"""Isolated transaction tests: no desktop session or user window is touched."""
+
+import copy
+import os
+from pathlib import Path
+import shutil
+import select
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+SOURCE = Path(__file__).resolve().parents[1] / "terminal/update"
+sys.path.insert(0, str(SOURCE))
+import core
+import processes
+
+
+def window():
+    geometry = dict(x=731, y=1551, width=719, height=614)
+    return dict(id="original", pid=123, title="Terminal", geometry=geometry, normal=geometry.copy(),
+                output=dict(x=0, y=0, width=5120, height=2160, name="HDMI-A-3", scale=1000),
+                maximized=0, fullscreen=False, minimized=False, active=True, desktops=["desktop"],
+                activities=[], keepAbove=False, keepBelow=False, noBorder=False, shaded=False,
+                skipTaskbar=False, skipPager=False, skipSwitcher=False, above=[])
+
+
+class LayoutTests(unittest.TestCase):
+    def test_offscreen_edges_and_oversized_rectangles_remain_exact(self):
+        for x, y, width, height in [(-5, 80, 400, 300), (100, -5, 400, 300),
+                                     (5000, 2000, 719, 614), (-30, -40, 6000, 2400)]:
+            saved = window()
+            saved["geometry"] = dict(x=x, y=y, width=width, height=height)
+            core.placement_matches(saved, copy.deepcopy(saved), False)
+
+    def test_running_binary_identity_must_match_the_pinned_file(self):
+        metadata = os.stat("/proc/self/exe")
+        core.verify_binary(os.getpid(), (metadata.st_dev, metadata.st_ino))
+        with self.assertRaises(processes.UpdateError):
+            core.verify_binary(os.getpid(), (metadata.st_dev, metadata.st_ino + 1))
+
+    def test_launch_entry_retargeting_is_observable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            alias = Path(directory) / "terminal"
+            alias.symlink_to("/bin/true")
+            original = core.resolve_launch(alias, "executable")
+            alias.unlink()
+            alias.symlink_to("/bin/false")
+            self.assertNotEqual(core.resolve_launch(alias, "executable"), original)
+
+    def test_five_pixel_offscreen_position_is_preserved(self):
+        original = window()
+        core.placement_matches(original, copy.deepcopy(original), False)
+        clamped = copy.deepcopy(original)
+        clamped["geometry"]["y"] = 1546
+        with self.assertRaisesRegex(processes.UpdateError, "geometry differs"):
+            core.placement_matches(original, clamped, False)
+
+    def test_changed_monitor_and_window_states_are_refused(self):
+        original = window()
+        for key in ("x", "y", "width", "height", "scale", "name"):
+            changed = copy.deepcopy(original)
+            changed["output"][key] = "other" if key == "name" else changed["output"][key] + 1
+            with self.subTest(key=key), self.assertRaises(processes.UpdateError):
+                core.placement_matches(original, changed, False)
+        for key in ("maximized", "fullscreen", "minimized", "desktops", "activities", "keepAbove",
+                    "keepBelow", "noBorder", "shaded", "skipTaskbar", "skipPager", "skipSwitcher"):
+            changed = copy.deepcopy(original)
+            changed[key] = ["other"] if isinstance(changed[key], list) else 1
+            with self.subTest(key=key), self.assertRaises(processes.UpdateError):
+                core.placement_matches(original, changed, False)
+
+    def test_missing_or_invalid_output_is_not_assumed_unchanged(self):
+        for output in (None, {}, dict(width=0, height=100, scale=1000), dict(width=100, height=100, scale=0)):
+            with self.subTest(output=output), self.assertRaises(processes.UpdateError):
+                core.exact_output(output, output)
+
+    def test_tabs_preserve_order_active_tab_and_literal_arguments(self):
+        tabs = [dict(cwd="/tmp/space ' dir", active=False), dict(cwd="/tmp", active=True)]
+        commands = [["/bin/printf", "$(touch /never)", "a'b"], ["/bin/true"]]
+        arguments = core.terminal_arguments(tabs, commands, 137, 41)
+        self.assertEqual(arguments[:3], ["--disable-server", "--minimize", "--geometry=137x41"])
+        self.assertNotIn("--window", arguments)
+        self.assertEqual(arguments.count("--tab"), 1)
+        self.assertEqual(arguments.count("--active-tab"), 1)
+        import shlex
+        self.assertEqual(shlex.split(arguments[arguments.index("--command") + 1]), commands[0])
+
+
+class GateTests(unittest.TestCase):
+    def test_real_child_cannot_execute_until_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "executed"
+            tabs = [dict(argv=["/bin/sh", "-c", 'printf executed > "$1"', "gate-test", str(output)])]
+            gates = core.StartupGates(directory, tabs)
+            command = gates.commands(tabs, str(SOURCE / "terminal-update-helper.py"))[0]
+            child = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                # The socket can be ready before VTE's async spawn callback sets child_pid.
+                self.assertTrue(select.select(gates.sockets, [], [], 3)[0])
+                self.assertFalse(gates.ready([dict(child_pid=0)]))
+                self.assertIsNone(child.poll())
+                self.assertTrue(self.wait_ready(gates, child.pid))
+                self.assertFalse(output.exists())
+                gates.release()
+                self.assertEqual(child.wait(timeout=3), 0)
+                self.assertEqual(output.read_text(), "executed")
+            finally:
+                gates.close()
+                if child.poll() is None:
+                    child.terminate()
+                child.communicate(timeout=3)
+
+    def wait_ready(self, gates, pid):
+        import time
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if gates.ready([dict(child_pid=pid)]):
+                return True
+        return False
+
+    def test_cancelled_gate_does_not_execute(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "should-not-exist"
+            tabs = [dict(argv=["/bin/touch", str(output)])]
+            gates = core.StartupGates(directory, tabs)
+            child = subprocess.Popen(gates.commands(tabs, str(SOURCE / "terminal-update-helper.py"))[0],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                self.assertTrue(self.wait_ready(gates, child.pid))
+                gates.close()
+                self.assertEqual(child.wait(timeout=3), 125)
+                self.assertFalse(output.exists())
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                child.communicate(timeout=3)
+
+    def test_tmux_attaches_immediately_and_is_not_blocked_by_a_startup_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            command = ["/usr/bin/tmux", "-N", "-S", "/tmp/private", "attach-session", "-t", "$6"]
+            tabs = [dict(argv=command, tmux={"session": "$6"})]
+            gates = core.StartupGates(directory, tabs)
+            self.assertEqual(gates.commands(tabs, "unused"), [command])
+            self.assertTrue(gates.ready([dict(child_pid=123)]))
+            gates.release()
+            gates.close()
+
+
+class Backend:
+    def __init__(self):
+        self.events = []
+        self.closed = False
+        self.status = None
+        self.record = dict(window_uuid="window", tab_uuid="tab", active=True, child_pid=111,
+                           foreground_pgid=111, pty="/missing-test-pty", working_directory="/tmp")
+        self.fault = None
+
+    def publish(self, status):
+        self.status = status
+        self.events.append(status["phase"])
+
+    def records(self, owner):
+        record = dict(self.record)
+        if owner == "new":
+            record.update(window_uuid="new-window", tab_uuid="new-tab", child_pid=222)
+        return [record]
+
+    def wait_for_confirmation(self, seconds):
+        self.events.append("confirmed")
+        if self.fault == "cancel":
+            raise processes.UpdateError("cancelled")
+
+    def check_cancelled(self):
+        pass
+
+    def terminal_owner(self, pid):
+        return "new"
+
+    def kwin(self, action, **values):
+        self.events.append(action)
+        snapshot = window()
+        if values["pid"] == 222:
+            snapshot["id"] = "replacement"
+            snapshot["pid"] = 222
+            snapshot["minimized"] = action != "present"
+        if self.fault == "monitor":
+            snapshot["output"]["scale"] += 1 if self.events.count("capture") > 1 else 0
+        if self.fault == "geometry" and values["pid"] == 222:
+            snapshot["geometry"]["y"] = 1546
+        return snapshot
+
+    def close_original(self, uuid):
+        self.events.append("close-original")
+        self.closed = True
+
+    def finish_replacement(self, owner):
+        self.events.append("finish-staging")
+        if self.fault == "finish":
+            raise processes.UpdateError("Could not finish replacement startup")
+
+
+class TransactionTests(unittest.TestCase):
+    def test_node_wrapper_resolves_to_the_unique_native_codex_child(self):
+        root = dict(pid=111, group=111, tty=1, exe="/usr/bin/node", argv=["node", "/bin/codex"])
+        native = dict(pid=222, group=111, tty=1, exe="/tmp/codex", argv=["codex"])
+        with patch.object(processes, "identity", side_effect=lambda pid: root if pid == 111 else native), \
+             patch.object(processes, "children", side_effect=lambda pid: [222] if pid == 111 else []):
+            self.assertEqual(processes.foreground(dict(child_pid=111, foreground_pgid=111)), native)
+
+    def run_job(self, fault=None):
+        backend = Backend()
+        backend.fault = fault
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "xfce4-terminal"
+            shutil.copyfile("/bin/true", binary)
+            binary.chmod(0o700)
+            request = dict(owner_pid=123, owner_bus="old", window_uuid="window", window_title="Terminal",
+                           executable=str(binary), launch_path=str(binary), launch_kind="executable", job_id="job", service="job-service")
+            process = dict(pid=111, start=1, exe="/bin/bash", argv=["bash"], group=111)
+            tab = dict(argv=["/bin/bash", "-l"], cwd="/tmp", active=True, record=backend.record,
+                       process=process, kind="bash")
+            ticks = iter(range(1, 1000))
+            class Gates:
+                def __init__(self, *arguments): pass
+                def commands(self, *arguments): return [["/bin/true"]]
+                def ready(self, *arguments): backend.events.append("gates-ready"); return True
+                def release(self): backend.events.append("release-programs")
+                def close(self): backend.events.append("gates-closed")
+            class Child:
+                pid = 222
+                returncode = 1
+                def poll(self): return 1 if fault == "exit" else None
+            job = core.UpdateJob(request, backend, str(SOURCE / "terminal-update-helper.py"))
+            with patch.object(core, "identity", return_value=dict(pid=123, start=1, exe="old")), \
+                 patch.object(core, "digest", side_effect=lambda path: "old" if str(path).startswith("/proc/") else "new"), \
+                 patch.object(core, "capture_tab", return_value=tab), \
+                 patch.object(core, "verify_binary"), \
+                 patch.object(core, "alive", side_effect=lambda saved: not backend.closed), \
+                 patch.object(core, "StartupGates", Gates), \
+                 patch.object(core.subprocess, "Popen", return_value=Child()), \
+                 patch.object(core.time, "sleep"), patch.object(core.time, "monotonic", side_effect=lambda: next(ticks)), \
+                 patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(directory) / "state"), "XDG_RUNTIME_DIR": directory}):
+                job.run()
+        return backend
+
+    def test_prepare_verify_close_exit_then_release_and_present(self):
+        backend = self.run_job()
+        self.assertEqual(backend.status["phase"], "complete", backend.status)
+        events = backend.events
+        self.assertLess(events.index("gates-ready"), events.index("close-original"))
+        self.assertLess(events.index("close-original"), events.index("release-programs"))
+        self.assertLess(events.index("release-programs"), events.index("present"))
+
+    def test_preparation_and_placement_failures_never_close_original(self):
+        for fault in ("cancel", "monitor", "geometry", "exit"):
+            with self.subTest(fault=fault):
+                backend = self.run_job(fault)
+                self.assertEqual(backend.status["phase"], "failed", backend.status)
+                self.assertNotIn("close-original", backend.events)
+                self.assertNotIn("release-programs", backend.events)
+                if fault == "geometry":
+                    self.assertIn("geometry differs", backend.status["message"])
+                if fault == "exit":
+                    self.assertIn("Replacement exited", backend.status["message"])
+
+    def test_tab_changes_invalidate_snapshot(self):
+        record = Backend().record
+        for key, value in dict(window_uuid="other", tab_uuid="other", active=False, child_pid=222,
+                               foreground_pgid=222, pty="other", working_directory="/other").items():
+            changed = {**record, key: value}
+            self.assertFalse(processes.same_tabs([record], [changed]), key)
+
+    def test_failed_handoff_after_close_is_not_reported_as_success_or_released(self):
+        backend = self.run_job("finish")
+        self.assertEqual(backend.status["phase"], "failed")
+        self.assertTrue(backend.status["original_closed"])
+        self.assertIsNotNone(backend.status["backup"])
+        self.assertNotIn("release-programs", backend.events)
+
+
+if __name__ == "__main__":
+    unittest.main()

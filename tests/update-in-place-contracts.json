@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "scope": "Terminal-owned Update in Place and optional launcher request adapter",
+  "artifacts": [
+    "Meson debugoptimized xfce4-terminal",
+    "Bundled Python/Gio update helper"
+  ],
+  "contracts": [
+    {
+      "id": "UPDATE-01",
+      "behavior": "The real context menu is disabled without a different usable binary",
+      "tests": [
+        "/terminal/update/context-menu",
+        "/terminal/update/no-new-build",
+        "/terminal/update/unavailable-target"
+      ]
+    },
+    {
+      "id": "UPDATE-02",
+      "behavior": "No Application Launcher service is required; tmux reattaches to the exact live session before closing the old client",
+      "tests": [
+        "/terminal/update/tmux-preserves-programs",
+        "test_tmux_attaches_immediately_and_is_not_blocked_by_a_startup_gate"
+      ]
+    },
+    {
+      "id": "UPDATE-03",
+      "behavior": "Non-tmux restarts require local confirmation and startup cannot execute until the original application exits",
+      "tests": [
+        "/terminal/update/cancel-non-tmux",
+        "/terminal/update/confirm-non-tmux",
+        "test_real_child_cannot_execute_until_release",
+        "test_prepare_verify_close_exit_then_release_and_present"
+      ]
+    },
+    {
+      "id": "UPDATE-04",
+      "behavior": "Replies and close authorization are bound to the window, PID, operation and unique helper owner",
+      "tests": [
+        "/terminal/update/wrong-uuid",
+        "/terminal/update/wrong-pid",
+        "/terminal/update/wrong-operation",
+        "/terminal/update/malformed-report"
+      ]
+    },
+    {
+      "id": "UPDATE-05",
+      "behavior": "Retargeting, missing helpers, changed tabs, cancellation and failed preparation cannot close the original",
+      "tests": [
+        "/terminal/update/launch-target-changed",
+        "/terminal/update/close-during-preparation",
+        "/terminal/update/close-during-confirmation",
+        "/terminal/update/helper-unavailable",
+        "test_preparation_and_placement_failures_never_close_original",
+        "test_cancelled_gate_does_not_execute"
+      ]
+    },
+    {
+      "id": "UPDATE-06",
+      "behavior": "Exact placement retains offscreen coordinates only for matching monitor metadata and reports the actual mismatch",
+      "tests": [
+        "test_five_pixel_offscreen_position_is_preserved",
+        "test_changed_monitor_and_window_states_are_refused",
+        "test_missing_or_invalid_output_is_not_assumed_unchanged"
+      ]
+    },
+    {
+      "id": "UPDATE-07",
+      "behavior": "Real tmux and confirmed two-tab shell updates complete under isolated software-rendered KWin, with no Application Launcher bus service, the same offscreen placement, active tab and working directories",
+      "tests": [
+        "terminal-update-wayland",
+        "terminal-update-wayland-shell"
+      ]
+    }
+  ],
+  "test_owners": {
+    "client_and_menu": "tests/test-terminal-update.c and tests/test-terminal-copy.c",
+    "backend": "tests/test-terminal-update-helper.py",
+    "placement": "terminal/update/kwin.js"
+  },
+  "environments": {
+    "automated_gui": "Private HOME/XDG, session bus and Xvfb; mock worker, no tracker",
+    "automated_backend": "Temporary files, fake KWin backend and real private child startup sockets",
+    "native_wayland": "Automated disposable tmux and confirmed two-tab shell updates under private-bus, private-HOME, software-rendered KWin; real user windows are never replaced"
+  }
+}

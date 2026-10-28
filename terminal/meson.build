@@ -26,6 +26,8 @@ terminal_sources = [
   'terminal-tmux.h',
   'terminal-util.c',
   'terminal-util.h',
+  'terminal-update.c',
+  'terminal-update.h',
   'terminal-widget.c',
   'terminal-widget.h',
   'terminal-window-dropdown.c',
@@ -87,6 +89,7 @@ terminal_executable = executable(
   dependencies: [
     glib,
     gio,
+    json_glib,
     gtk,
     vte,
     pcre2,
@@ -105,3 +108,6 @@ terminal_executable = executable(
   install_dir: get_option('prefix') / get_option('bindir'),
   install_rpath: vte_install_rpath,
 )
+
+install_data('update/terminal-update-helper.py', 'update/core.py', 'update/processes.py', 'update/kwin.js',
+  install_dir: get_option('libexecdir') / 'xfce4-terminal/update')

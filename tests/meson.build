@@ -82,6 +82,7 @@ copy_test = executable(
   'test-terminal-copy',
   'test-terminal-copy.c',
   'test-terminal-launching.c',
+  'test-terminal-update.c',
   '../terminal/terminal-app.c',
   '../terminal/terminal-build-id.c',
   '../terminal/terminal-build-monitor.c',
@@ -95,6 +96,7 @@ copy_test = executable(
   '../terminal/terminal-screen.c',
   '../terminal/terminal-tmux.c',
   '../terminal/terminal-util.c',
+  '../terminal/terminal-update.c',
   '../terminal/terminal-widget.c',
   '../terminal/terminal-window-dropdown.c',
   '../terminal/terminal-window.c',
@@ -102,20 +104,24 @@ copy_test = executable(
   terminal_enum_header,
   terminal_enum_source,
   xfce_revision_h[0],
-  c_args: ['-DTEST_TERMINAL_BINARY="' + (meson.current_build_dir() / '../terminal/xfce4-terminal') + '"'],
+  c_args: ['-DTEST_TERMINAL_BINARY="' + (meson.current_build_dir() / '../terminal/xfce4-terminal') + '"',
+           '-DTEST_UPDATE_WORKER="' + (meson.current_source_dir() / 'fixtures/update_worker.py') + '"'],
   include_directories: [include_directories('..'), include_directories('../terminal')],
   dependencies: [
-    glib, gio, gtk, vte, pcre2, libxfce4ui, libxfce4kbd, libxfce4util, xfconf,
+    glib, gio, json_glib, gtk, vte, pcre2, libxfce4ui, libxfce4kbd, libxfce4util, xfconf,
     x11_deps, wayland_deps, gtk_layer_shell, libutempter, libprocstat, libutil,
   ],
 )
 
 # Native clipboard ownership must not race other GUI tests on the same display.
 test('terminal-copy', copy_test, depends: terminal_executable,
-  timeout: 30, is_parallel: false, env: {'TERM': 'xterm-256color'})
+  timeout: 60, is_parallel: false, env: {'TERM': 'xterm-256color'})
 
 test('fork-versioning', find_program('python3'),
   args: files('test-fork-version.py'), timeout: 120)
+
+test('terminal-update-helper', find_program('python3'),
+  args: files('test-terminal-update-helper.py'), timeout: 30)
 
 if get_option('patched-vte')
   selection_test_env = environment()
@@ -125,4 +131,17 @@ if get_option('patched-vte')
     args: files('test-terminal-stream-selection.py'), timeout: 35,
     depends: vte_project.get_variable('libvte_gtk3'),
     env: selection_test_env, is_parallel: false)
+endif
+
+update_confirm_module = shared_module('terminal-update-confirm', 'update-confirm-module.c',
+  dependencies: gtk, install: false)
+kwin_test = find_program('kwin_wayland', required: false)
+if kwin_test.found()
+  test('terminal-update-wayland', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), terminal_executable.full_path()],
+    depends: terminal_executable, timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-shell', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--shell', '--confirm-module',
+           update_confirm_module.full_path(), terminal_executable.full_path()],
+    depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
 endif

@@ -44,6 +44,7 @@
 #include "terminal-preferences-dialog.h"
 #include "terminal-private.h"
 #include "terminal-search-dialog.h"
+#include "terminal-update.h"
 #include "terminal-util.h"
 #include "terminal-widget.h"
 #include "terminal-window-dropdown.h"
@@ -209,6 +210,8 @@ static gboolean
 terminal_window_action_new_tab (TerminalWindow *window);
 static gboolean
 terminal_window_action_new_window (TerminalWindow *window);
+static gboolean
+terminal_window_action_update_in_place (TerminalWindow *window);
 static gboolean
 terminal_window_action_open_folder (TerminalWindow *window);
 static gboolean
@@ -433,6 +436,16 @@ static XfceGtkActionEntry action_entries[] = {
     N_ ("Open a new terminal window"),
     "window-new",
     G_CALLBACK (terminal_window_action_new_window),
+  },
+  {
+    TERMINAL_WINDOW_ACTION_UPDATE_IN_PLACE,
+    "<Actions>/terminal-window/update-in-place",
+    "",
+    XFCE_GTK_IMAGE_MENU_ITEM,
+    N_ ("_Update in Place"),
+    N_ ("Replace this window with the latest terminal build and restore its sessions and placement"),
+    "view-refresh",
+    G_CALLBACK (terminal_window_action_update_in_place),
   },
   {
     TERMINAL_WINDOW_ACTION_OPEN_FOLDER,
@@ -2119,11 +2132,34 @@ terminal_window_notebook_create_window (GtkNotebook *notebook,
 
 
 
+static void
+terminal_window_update_item_window_free (gpointer data)
+{
+  g_weak_ref_clear (data);
+  g_free (data);
+}
+
+static void
+terminal_window_update_item_sensitive (TerminalBuildMonitor *monitor,
+                                       GtkWidget *item)
+{
+  GWeakRef *reference = g_object_get_data (G_OBJECT (item), "terminal-update-window");
+  TerminalWindow *window = g_weak_ref_get (reference);
+
+  gtk_widget_set_sensitive (item, window != NULL
+                                  && !gtk_widget_in_destruction (GTK_WIDGET (window))
+                                  && !window->priv->drop_down
+                                  && !terminal_update_is_pending (GTK_WINDOW (window))
+                                  && terminal_build_monitor_has_update (monitor));
+  g_clear_object (&window);
+}
+
 static GtkWidget *
 terminal_window_get_context_menu (TerminalScreen *screen,
                                   TerminalWindow *window)
 {
-  GtkWidget *context_menu;
+  GtkWidget *context_menu, *update_item;
+  GWeakRef *update_window;
   GList *children, *lp;
 
   g_return_val_if_fail (TERMINAL_IS_WINDOW (window), NULL);
@@ -2132,6 +2168,14 @@ terminal_window_get_context_menu (TerminalScreen *screen,
 
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_NEW_TAB), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_NEW_WINDOW), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
+  update_item = xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_UPDATE_IN_PLACE), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
+  update_window = g_new0 (GWeakRef, 1);
+  g_weak_ref_init (update_window, window);
+  g_object_set_data_full (G_OBJECT (update_item), "terminal-update-window", update_window,
+                          terminal_window_update_item_window_free);
+  g_signal_connect_object (window->priv->build_monitor, "changed",
+                           G_CALLBACK (terminal_window_update_item_sensitive), update_item, 0);
+  terminal_window_update_item_sensitive (window->priv->build_monitor, update_item);
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_OPEN_FOLDER), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   xfce_gtk_menu_append_separator (GTK_MENU_SHELL (context_menu));
 
@@ -2277,6 +2321,16 @@ terminal_window_action_new_window (TerminalWindow *window)
       g_free (directory);
     }
 
+  return TRUE;
+}
+
+
+
+static gboolean
+terminal_window_action_update_in_place (TerminalWindow *window)
+{
+  if (!window->priv->drop_down && terminal_build_monitor_has_update (window->priv->build_monitor))
+    terminal_update_in_place (GTK_WINDOW (window), terminal_window_get_uuid (window), window->priv->build_monitor);
   return TRUE;
 }
 

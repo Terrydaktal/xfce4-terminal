@@ -24,12 +24,14 @@
 #endif
 
 #include <gio/gio.h>
+#include <json-glib/json-glib.h>
 
 #include "terminal-config.h"
 #include "terminal-gdbus.h"
 #include "terminal-private.h"
 #include "terminal-screen.h"
 #include "terminal-window.h"
+#include "terminal-update.h"
 
 
 
@@ -51,6 +53,13 @@ static const gchar terminal_gdbus_introspection_xml[] =
       "<method name='" TERMINAL_DBUS_METHOD_SEND_YES "'>"
         "<arg type='s' name='tab-uuid' direction='in'/>"
       "</method>"
+      "<method name='GetUpdateStatus'><arg type='s' name='window-uuid' direction='in'/>"
+        "<arg type='s' name='status-json' direction='out'/></method>"
+      "<method name='UpdateInPlace'><arg type='s' name='window-uuid' direction='in'/>"
+        "<arg type='s' name='update-service' direction='out'/></method>"
+      "<method name='CloseForUpdate'><arg type='s' name='window-uuid' direction='in'/>"
+        "<arg type='s' name='update-service' direction='in'/></method>"
+      "<method name='FinishUpdate'><arg type='s' name='update-service' direction='in'/></method>"
     "</interface>"
   "</node>";
 // clang-format on
@@ -179,6 +188,8 @@ terminal_gdbus_list_terminals (TerminalApp *app,
           g_variant_builder_add (&terminal, "{sv}", "foreground_pgid",
                                  g_variant_new_uint32 (foreground_pgid > 0 ? (guint32) foreground_pgid : 0));
           terminal_gdbus_dict_add_string (&terminal, "pty", pty_name);
+          g_variant_builder_add (&terminal, "{sv}", "input_enabled",
+                                 g_variant_new_boolean (terminal_screen_get_input_enabled (screen)));
           g_variant_builder_add_value (&terminals, g_variant_builder_end (&terminal));
 
           g_free (pty_name);
@@ -246,7 +257,8 @@ terminal_gdbus_send_text (TerminalApp *app,
       return;
     }
 
-  if (!terminal_screen_get_input_enabled (screen))
+  if (!terminal_screen_get_input_enabled (screen)
+      || g_getenv ("XFCE4_TERMINAL_UPDATE_SERVICE") != NULL)
     {
       g_dbus_method_invocation_return_error (invocation,
                                              TERMINAL_ERROR, TERMINAL_ERROR_INPUT_DISABLED,
@@ -355,6 +367,97 @@ terminal_gdbus_authorize_send_text (GDBusConnection *connection,
 
 
 
+static gboolean
+terminal_gdbus_close_update_window (gpointer data)
+{
+  gtk_widget_destroy (GTK_WIDGET (data));
+  return G_SOURCE_REMOVE;
+}
+
+static void
+terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gchar *sender,
+                      const gchar *method, GVariant *parameters, GDBusMethodInvocation *invocation)
+{
+  const gchar *uuid, *service = NULL;
+  TerminalWindow *window = NULL;
+  if (g_str_equal (method, "CloseForUpdate"))
+    g_variant_get (parameters, "(&s&s)", &uuid, &service);
+  else
+    g_variant_get (parameters, "(&s)", &uuid);
+  for (const GSList *link = terminal_app_get_windows (app); link != NULL; link = link->next)
+    if (g_strcmp0 (terminal_window_get_uuid (TERMINAL_WINDOW (link->data)), uuid) == 0)
+      window = TERMINAL_WINDOW (link->data);
+  if (window == NULL || gtk_widget_in_destruction (GTK_WIDGET (window)))
+    {
+      g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                                            "Unknown terminal window UUID");
+      return;
+    }
+  GVariant *reply = sender != NULL ? g_dbus_connection_call_sync (connection,
+      "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+      "GetConnectionUnixUser", g_variant_new ("(s)", sender), G_VARIANT_TYPE ("(u)"),
+      0, 1000, NULL, NULL) : NULL;
+  guint32 uid = G_MAXUINT32;
+  if (reply != NULL)
+    {
+      g_variant_get (reply, "(u)", &uid);
+      g_variant_unref (reply);
+    }
+  if (uid != getuid ())
+    {
+      g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+                                            "The update caller must belong to the same user");
+      return;
+    }
+  if (g_str_equal (method, "CloseForUpdate"))
+    {
+      if (!terminal_update_authorize_close (GTK_WINDOW (window), service, sender))
+        g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+                                              "Only this window's pending update helper can close it");
+      else
+        {
+          g_dbus_method_invocation_return_value (invocation, NULL);
+          g_idle_add_full (G_PRIORITY_DEFAULT_IDLE, terminal_gdbus_close_update_window,
+                           g_object_ref (window), g_object_unref);
+        }
+      return;
+    }
+  TerminalBuildMonitor *monitor = terminal_build_monitor_get ();
+  if (g_str_equal (method, "UpdateInPlace"))
+    {
+      if (!terminal_build_monitor_has_update (monitor) && !terminal_update_is_pending (GTK_WINDOW (window)))
+        g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                              "No newer terminal executable is available");
+      else if (g_strcmp0 (G_OBJECT_TYPE_NAME (window), "TerminalWindowDropdown") == 0)
+        g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                                              "Drop-down terminals cannot be updated in place");
+      else
+        {
+          terminal_update_in_place (GTK_WINDOW (window), uuid, monitor);
+          g_dbus_method_invocation_return_value (invocation,
+              g_variant_new ("(s)", terminal_update_get_service (GTK_WINDOW (window))));
+        }
+    }
+  else
+    {
+      JsonObject *object = json_object_new ();
+      json_object_set_boolean_member (object, "updatable", terminal_build_monitor_has_update (monitor)
+          && g_strcmp0 (G_OBJECT_TYPE_NAME (window), "TerminalWindowDropdown") != 0);
+      json_object_set_boolean_member (object, "pending", terminal_update_is_pending (GTK_WINDOW (window)));
+      json_object_set_string_member (object, "service", terminal_update_get_service (GTK_WINDOW (window)));
+      JsonNode *node = json_node_new (JSON_NODE_OBJECT);
+      json_node_take_object (node, object);
+      JsonGenerator *generator = json_generator_new ();
+      json_generator_set_root (generator, node);
+      gchar *json = json_generator_to_data (generator, NULL);
+      g_dbus_method_invocation_return_value (invocation, g_variant_new ("(s)", json));
+      g_free (json);
+      json_node_free (node);
+      g_object_unref (generator);
+    }
+  g_object_unref (monitor);
+}
+
 static void
 terminal_gdbus_method_call (GDBusConnection *connection,
                             const gchar *sender,
@@ -377,7 +480,27 @@ terminal_gdbus_method_call (GDBusConnection *connection,
   g_return_if_fail (!g_strcmp0 (object_path, TERMINAL_DBUS_PATH));
   g_return_if_fail (!g_strcmp0 (interface_name, TERMINAL_DBUS_INTERFACE));
 
-  if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_LAUNCH) == 0)
+  if (g_str_equal (method_name, "FinishUpdate"))
+    {
+      const gchar *service;
+      g_variant_get (parameters, "(&s)", &service);
+      GVariant *reply = g_strcmp0 (service, g_getenv ("XFCE4_TERMINAL_UPDATE_SERVICE")) == 0
+          ? g_dbus_connection_call_sync (connection, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+              "org.freedesktop.DBus", "GetNameOwner", g_variant_new ("(s)", service),
+              G_VARIANT_TYPE ("(s)"), 0, 1000, NULL, NULL) : NULL;
+      const gchar *owner = NULL;
+      if (reply != NULL) g_variant_get (reply, "(&s)", &owner);
+      if (owner != NULL && g_strcmp0 (owner, sender) == 0)
+        {
+          g_unsetenv ("XFCE4_TERMINAL_UPDATE_SERVICE");
+          g_dbus_method_invocation_return_value (invocation, NULL);
+        }
+      else
+        g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+                                              "Only the pending update helper can finish startup");
+      if (reply != NULL) g_variant_unref (reply);
+    }
+  else if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_LAUNCH) == 0)
     {
       /* get paramenters */
       g_variant_get (parameters, "(u^ay^aay)", &uid, &display_name, &argv);
@@ -416,6 +539,11 @@ terminal_gdbus_method_call (GDBusConnection *connection,
   else if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_LIST_TERMINALS) == 0)
     {
       terminal_gdbus_list_terminals (app, invocation);
+    }
+  else if (g_str_equal (method_name, "GetUpdateStatus") || g_str_equal (method_name, "UpdateInPlace")
+           || g_str_equal (method_name, "CloseForUpdate"))
+    {
+      terminal_gdbus_update (app, connection, sender, method_name, parameters, invocation);
     }
   else if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_SEND_ENTER) == 0)
     {

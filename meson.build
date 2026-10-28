@@ -31,6 +31,7 @@ dependency_versions = {
 
 glib = dependency('glib-2.0', version: dependency_versions['glib'])
 gio = dependency('gio-2.0', version: dependency_versions['glib'])
+json_glib = dependency('json-glib-1.0', version: '>= 1.6.0')
 gtk = dependency('gtk+-3.0', version: dependency_versions['gtk'])
 vte_install_rpath = ''
 if get_option('patched-vte')
@@ -213,6 +214,9 @@ extra_cflags += [
   '-DSBINDIR="@0@"'.format(get_option('prefix') / get_option('sbindir')),
   '-DSYSCONFDIR="@0@"'.format(get_option('prefix') / get_option('sysconfdir')),
   '-DHAVE_XFCE_REVISION_H=1',
+  '-DTERMINAL_UPDATE_HELPER_BUILD="@0@"'.format(meson.source_root() / 'terminal/update/terminal-update-helper.py'),
+  '-DTERMINAL_UPDATE_HELPER_INSTALLED="@0@"'.format(get_option('prefix') / get_option('libexecdir') / 'xfce4-terminal/update/terminal-update-helper.py'),
+  '-DTERMINAL_UPDATE_PYTHON="@0@"'.format(find_program('python3').path()),
 ]
 
 add_project_arguments(cc.get_supported_arguments(extra_cflags_check), language: 'c')

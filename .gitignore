@@ -16,6 +16,7 @@
 /BUILD-ID
 __pycache__/
 .pytest_cache/
+.ruff_cache/
 
 # Local coding-agent state is not part of the terminal source.
 /.agents/
