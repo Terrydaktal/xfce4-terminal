@@ -38,6 +38,11 @@
 #include "terminal-widget.h"
 #include "terminal-window.h"
 
+#ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
+/* A hard link dependency prevents silently falling back to an unpatched VTE. */
+extern gboolean vte_terminal_has_stream_selection_fix (void);
+#endif
+
 
 
 static void
@@ -188,6 +193,14 @@ main (int argc, char **argv)
 
   /* initialize options */
   options.disable_server = options.show_version = options.show_colors = options.show_help = options.show_preferences = 0;
+
+#ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
+  if (!vte_terminal_has_stream_selection_fix ())
+    {
+      g_printerr ("The private VTE streaming-selection repair is missing.\n");
+      return EXIT_FAILURE;
+    }
+#endif
 
   /* install required signal handlers */
   signal (SIGPIPE, SIG_IGN);

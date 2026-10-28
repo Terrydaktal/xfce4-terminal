@@ -1,4 +1,11 @@
 option(
+  'patched-vte',
+  type: 'boolean',
+  value: true,
+  description: 'Build the pinned private VTE with the live-output selection repair',
+)
+
+option(
   'x11',
   type: 'feature',
   value: 'auto',

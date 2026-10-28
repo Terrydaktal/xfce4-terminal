@@ -97,3 +97,13 @@ copy_test = executable(
 
 # Native clipboard ownership must not race other GUI tests on the same display.
 test('terminal-copy', copy_test, timeout: 30, is_parallel: false, env: {'TERM': 'xterm-256color'})
+
+if get_option('patched-vte')
+  selection_test_env = environment()
+  selection_test_env.prepend('LD_LIBRARY_PATH',
+    meson.project_build_root() / 'subprojects/vte-0.84.1/src')
+  test('terminal-stream-selection', find_program('python3'),
+    args: files('test-terminal-stream-selection.py'), timeout: 35,
+    depends: vte_project.get_variable('libvte_gtk3'),
+    env: selection_test_env, is_parallel: false)
+endif

@@ -99,4 +99,5 @@ executable(
   ],
   install: true,
   install_dir: get_option('prefix') / get_option('bindir'),
+  install_rpath: vte_install_rpath,
 )

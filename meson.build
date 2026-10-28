@@ -3,7 +3,7 @@ project(
   'c',
 version : '1.2.0-dev',
   license : 'GPL-2.0-or-later',
-  meson_version : '>= 0.54.0',
+  meson_version : '>= 1.3.2',
   default_options : ['c_std=gnu11', 'buildtype=debugoptimized', 'warning_level=2']
 )
 
@@ -32,7 +32,28 @@ dependency_versions = {
 glib = dependency('glib-2.0', version: dependency_versions['glib'])
 gio = dependency('gio-2.0', version: dependency_versions['glib'])
 gtk = dependency('gtk+-3.0', version: dependency_versions['gtk'])
-vte = dependency('vte-2.91', version: dependency_versions['vte'])
+vte_install_rpath = ''
+if get_option('patched-vte')
+  # Keep this dependency private to the terminal: never replace the system VTE
+  # or export a library search path into shells and applications started here.
+  vte_project = subproject('vte', default_options: [
+    'gtk3=true',
+    'gtk4=false',
+    'app=false',
+    'gir=false',
+    'vapi=false',
+    'glade=false',
+    'docs=false',
+    'tests=false',
+  ])
+  vte = vte_project.get_variable('libvte_gtk3_dep')
+  vte_install_rpath = '$ORIGIN' / fs.relative_to(
+    get_option('prefix') / get_option('libdir') / 'xfce4-terminal',
+    get_option('prefix') / get_option('bindir'),
+  )
+else
+  vte = dependency('vte-2.91', version: dependency_versions['vte'])
+endif
 pcre2 = dependency('libpcre2-8', version: dependency_versions['pcre2'])
 libxfce4ui = dependency('libxfce4ui-2', version: dependency_versions['xfce4'])
 libxfce4kbd = dependency('libxfce4kbd-private-3', version: dependency_versions['xfce4'])
@@ -49,6 +70,11 @@ wayland_deps = []
 wayland_deps += dependency('gdk-wayland-3.0', version: dependency_versions['gtk'], required: get_option('wayland'))
 
 feature_cflags = []
+if get_option('patched-vte')
+  # main.c calls a symbol exported only by the patched library. A missing
+  # private library must fail at load time instead of silently using system VTE.
+  feature_cflags += '-DHAVE_PRIVATE_VTE_SELECTION_FIX=1'
+endif
 
 enable_x11 = not get_option('x11').disabled()
 foreach dep : x11_deps

@@ -23,6 +23,39 @@ gnome-terminal. Vte is probably not the fastest terminal emulation library on
 earth, but it's one of the best when it comes to Unicode support, and not to
 forget, it's actively developed.
 
+### Selecting Text During Live Output
+
+The default build includes a private, pinned VTE 0.84.1 with a repair for text
+selection during streaming output. Upstream compared an unfinished mouse drag
+with the previous PRIMARY clipboard selection, so unrelated output could cancel
+the drag. The repair compares the active selection immediately before and after
+each input batch instead. Output continues while dragging; changes to the
+selected text still invalidate the selection. Clipboard ownership changes when
+the gesture finishes, as before.
+
+`subprojects/vte.wrap` pins the official source archive and checksum.
+`subprojects/packagefiles/vte/` contains the selection repair and private build
+integration. Meson fetches and patches the source during setup; downloaded
+sources and build products are ignored by Git. Build with `meson setup build`
+and `meson compile -C build`. An existing build can use
+`meson setup --reconfigure build -Dpatched-vte=true`.
+
+The build-tree executable loads its matching library using Meson's build RPATH.
+Installation places the library under `libdir/xfce4-terminal`, with an
+executable-scoped `$ORIGIN` RUNPATH. No `LD_LIBRARY_PATH` is exported into child
+shells, and the system VTE is unchanged. The executable requires a marker symbol
+from the patched library, so a missing private library cannot silently fall back
+to the unpatched system copy. `-Dpatched-vte=false` explicitly selects system VTE
+and omits this repair. Existing terminal processes retain their loaded library
+until they are restarted.
+
+`meson test -C build --no-rebuild terminal-stream-selection` exercises real PTY
+output and mouse dragging on a private Xvfb display. It checks wheel scrolling,
+autoscroll above the viewport, continued output, clipboard contents on release,
+and selection invalidation when the selected text actually changes. The test
+requires Python with PyGObject, `xvfb-run` and `xdotool`; it uses synthetic text
+and never sends input to an existing terminal window.
+
 ### Local Path Hyperlinks
 
 This fork can detect local file paths in output when the foreground PTY

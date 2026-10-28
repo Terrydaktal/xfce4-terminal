@@ -1,0 +1,55 @@
+--- a/src/vte.cc
++++ b/src/vte.cc
+@@ -3986,6 +3986,16 @@
+ 
+         auto context = ProcessingContext{*this};
+ 
++        /* PRIMARY is only published when a mouse selection ends.  Output can
++         * already be queued, or the processing source can re-arm PTY reads,
++         * while that selection is still being extended (including autoscroll).
++         * Compare with its current contents, not a previous clipboard owner. */
++        auto selecting_text = vte::Freeable<GString>{};
++        if (m_selecting && !m_selection_resolved.empty()) {
++                selecting_text = vte::take_freeable(g_string_new(nullptr));
++                get_selected_text(selecting_text.get());
++        }
++
+         while (!m_incoming_queue.empty()) {
+                 auto& chunk = m_incoming_queue.front();
+ 
+@@ -4056,9 +4066,11 @@
+                         //FIXMEchpe: this is atrocious
+                         auto selection = g_string_new(nullptr);
+                         get_selected_text(selection);
+-                        if ((selection->str == nullptr) ||
+-                            (m_selection[std::to_underlying(vte::platform::ClipboardType::PRIMARY)] == nullptr) ||
+-                            (strcmp(selection->str, m_selection[std::to_underlying(vte::platform::ClipboardType::PRIMARY)]->str) != 0)) {
++                        auto const previous_selection = selecting_text
++                                ? selecting_text.get()
++                                : m_selection[std::to_underlying(vte::platform::ClipboardType::PRIMARY)];
++                        if (previous_selection == nullptr ||
++                            !g_string_equal(selection, previous_selection)) {
+                                 deselect_all();
+                         }
+                         g_string_free(selection, TRUE);
+@@ -7173,8 +7185,8 @@
+         /* Take care of updating the display. */
+         resolve_selection();
+ 
+-	/* Temporarily stop caring about input from the child. */
+-	disconnect_pty_read();
++        /* Keep processing child output. process_incoming() checks the selected
++         * text before and after each batch, including during a mouse drag. */
+ }
+ 
+ bool
+@@ -7190,9 +7202,6 @@
+ 		}
+                 stop_autoscroll();  /* Required before setting m_selecting to false, see #105. */
+ 		m_selecting = false;
+-
+-		/* Reconnect to input from the child if we paused it. */
+-		connect_pty_read();
+ 
+ 		return true;
+ 	}

@@ -1,0 +1,186 @@
+--- a/src/vtegtk.cc
++++ b/src/vtegtk.cc
+@@ -3160,6 +3160,18 @@
+  *
+  * Since: 0.40
+  */
++extern "C" {
++_VTE_PUBLIC
++gboolean vte_terminal_has_stream_selection_fix (void) noexcept;
++}
++
++/* Required by the private xfce4-terminal build, never by system VTE clients. */
++gboolean
++vte_terminal_has_stream_selection_fix (void) noexcept
++{
++        return TRUE;
++}
++
+ guint
+ vte_get_major_version (void) noexcept
+ {
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -127,3 +127,11 @@
+   value: true,
+   description: 'Enable Vala bindings',
+ )
++
++# Private terminal builds run their own real-PTY regression coverage.
++option(
++  'tests',
++  type: 'boolean',
++  value: true,
++  description: 'Build upstream unit-test and diagnostic executables',
++)
+--- a/meson.build
++++ b/meson.build
+@@ -783,7 +783,9 @@
+ 
+ subdir('src')
+ subdir('bindings')
+-subdir('po')
++if not meson.is_subproject()
++  subdir('po')
++endif
+ 
+ if get_option('docs')
+   subdir('doc/reference')
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -419,6 +419,7 @@
+     dependencies: libvte_gtk3_deps,
+     cpp_args: libvte_gtk3_cppflags,
+     install: true,
++    install_dir: meson.is_subproject() ? get_option('libdir') / 'xfce4-terminal' : get_option('libdir'),
+   )
+ 
+   libvte_gtk3_dep = declare_dependency(
+@@ -428,16 +429,18 @@
+     link_with: libvte_gtk3
+   )
+ 
+-  pkg.generate(
+-    libvte_gtk3,
+-    version: vte_version,
+-    name: 'vte',
+-    description: 'VTE widget for GTK+ 3.0',
+-    filebase: vte_gtk3_api_name,
+-    subdirs: vte_gtk3_api_name,
+-    requires: libvte_gtk3_public_deps,
+-    variables: 'exec_prefix=${prefix}',
+-  )
++  if not meson.is_subproject()
++    pkg.generate(
++      libvte_gtk3,
++      version: vte_version,
++      name: 'vte',
++      description: 'VTE widget for GTK+ 3.0',
++      filebase: vte_gtk3_api_name,
++      subdirs: vte_gtk3_api_name,
++      requires: libvte_gtk3_public_deps,
++      variables: 'exec_prefix=${prefix}',
++    )
++  endif
+ endif
+ 
+ if get_option('gtk4')
+@@ -517,6 +520,8 @@
+ endif
+ 
+ ## Tests
++
++if get_option('tests')
+ 
+ # decoder cat
+ 
+@@ -1071,6 +1076,8 @@
+   )
+ endforeach
+ 
++endif # tests
++
+ # Shell integration
+ 
+ vte_csh = configure_file(
+@@ -1079,7 +1086,7 @@
+   configuration: {
+     'libexecdir': vte_prefix / vte_libexecdir,
+   },
+-  install: true,
++  install: not meson.is_subproject(),
+   install_dir: vte_sysconfdir / 'profile.d',
+ )
+ 
+@@ -1089,7 +1096,7 @@
+   configuration: {
+     'libexecdir': vte_prefix / vte_libexecdir,
+   },
+-  install: true,
++  install: not meson.is_subproject(),
+   install_dir: vte_sysconfdir / 'profile.d',
+ )
+ 
+@@ -1097,7 +1104,7 @@
+ 
+ # Systemd integration
+ 
+-if systemd_dep.found()
++if systemd_dep.found() and not meson.is_subproject()
+   install_data(
+     sources: 'vte-spawn-.scope.conf',
+     install_dir: vte_systemduserunitdir / 'vte-spawn-.scope.d',
+--- a/src/vte/meson.build
++++ b/src/vte/meson.build
+@@ -65,10 +65,12 @@
+ 
+   libvte_gtk3_public_headers = libvte_common_public_headers
+ 
+-  install_headers(
+-    libvte_gtk3_public_headers,
+-    subdir: vte_gtk3_api_path
+-  )
++  if not meson.is_subproject()
++    install_headers(
++      libvte_gtk3_public_headers,
++      subdir: vte_gtk3_api_path
++    )
++  endif
+ 
+   libvte_gtk3_public_headers += custom_target(
+     'vtetypebuiltins-gtk3.h',
+@@ -79,7 +81,7 @@
+       '@INPUT@',
+     ],
+     input: libvte_common_enum_headers,
+-    install: true,
++    install: not meson.is_subproject(),
+     install_dir: vte_includedir / vte_gtk3_api_path,
+     output: 'vtetypebuiltins-gtk3.h',
+   )
+@@ -102,10 +104,12 @@
+ 
+   libvte_gtk4_public_headers = libvte_common_public_headers
+ 
+-  install_headers(
+-    libvte_gtk4_public_headers,
+-    subdir: vte_gtk4_api_path
+-  )
++  if not meson.is_subproject()
++    install_headers(
++      libvte_gtk4_public_headers,
++      subdir: vte_gtk4_api_path
++    )
++  endif
+ 
+   libvte_gtk4_public_headers += custom_target(
+     'vtetypebuiltins-gtk4.h',
+@@ -116,7 +120,7 @@
+       '@INPUT@',
+     ],
+     input: libvte_common_enum_headers,
+-    install: true,
++    install: not meson.is_subproject(),
+     install_dir: vte_includedir / vte_gtk4_api_path,
+     output: 'vtetypebuiltins-gtk4.h',
+   )
