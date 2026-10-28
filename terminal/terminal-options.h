@@ -98,6 +98,7 @@ typedef struct
   guint show_colors : 1;
   guint show_preferences : 1;
   guint disable_server : 1;
+  guint server_mode_set : 1;
 } TerminalOptions;
 
 void

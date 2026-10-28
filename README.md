@@ -56,6 +56,26 @@ and selection invalidation when the selected text actually changes. The test
 requires Python with PyGObject, `xvfb-run` and `xdotool`; it uses synthetic text
 and never sends input to an existing terminal window.
 
+### Launching
+
+**Preferences -> Advanced -> Launching** contains **Start each terminal launch in
+a separate process**. The `/misc-run-in-separate-process` boolean in the
+`xfce4-terminal` Xfconf channel applies before launch forwarding, whether the
+executable is started by a desktop launcher, shortcut, shell or another program.
+It affects future invocations only, not windows or tabs already open. The
+upstream default remains process reuse (the checkbox is off).
+
+`--disable-server` forces a separate process; `--enable-server` requests reuse of
+an existing launch server, starting a new server if none exists. Both override
+the saved preference, and the last flag wins when both are supplied. Arguments
+to a child command after `--execute`/`-x` or `--` are not terminal overrides.
+Separate processes still expose their instance D-Bus control API, including
+`ListTerminals()` and `SendEnter()`.
+
+The repository wrapper no longer forces `--disable-server`, so the checkbox is
+effective for wrapper launches too. It still supplies the launch-path metadata
+used below; direct executable launches do not require that metadata.
+
 ### Fork Versions
 
 The terminal's `--version`, About dialog and `tmux-mosh clients` use versions such

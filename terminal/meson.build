@@ -70,7 +70,7 @@ terminal_enum_source = gnome.mkenums(
 )
 terminal_sources += terminal_enum_source
 
-executable(
+terminal_executable = executable(
   'xfce4-terminal',
   terminal_sources,
   sources: xfce_revision_h[0],

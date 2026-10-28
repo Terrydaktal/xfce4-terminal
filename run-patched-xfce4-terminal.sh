@@ -4,4 +4,4 @@ set -euo pipefail
 SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 
-exec "${SCRIPT_DIR}/build/terminal/xfce4-terminal" --disable-server "$@"
+exec "${SCRIPT_DIR}/build/terminal/xfce4-terminal" "$@"

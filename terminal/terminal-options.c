@@ -187,7 +187,15 @@ terminal_options_parse (gint argc,
         }
 
       if (terminal_option_cmp ("disable-server", 0, argc, argv, &n, NULL, &short_offset))
-        options->disable_server = 1;
+        {
+          options->disable_server = 1;
+          options->server_mode_set = 1;
+        }
+      else if (terminal_option_cmp ("enable-server", 0, argc, argv, &n, NULL, &short_offset))
+        {
+          options->disable_server = 0;
+          options->server_mode_set = 1;
+        }
     }
 }
 
@@ -640,6 +648,7 @@ terminal_window_attr_parse (gint argc,
           /* This option is handled elsewhere; no need to handle the success case */
         }
       else if (terminal_option_cmp ("disable-server", 0, argc, argv, &n, NULL, &short_offset)
+               || terminal_option_cmp ("enable-server", 0, argc, argv, &n, NULL, &short_offset)
                || terminal_option_cmp ("sync", 0, argc, argv, &n, NULL, &short_offset)
                || terminal_option_cmp ("g-fatal-warnings", 0, argc, argv, &n, NULL, &short_offset))
         {

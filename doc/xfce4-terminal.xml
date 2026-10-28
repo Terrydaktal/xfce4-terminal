@@ -194,7 +194,16 @@
             <option>--disable-server</option>
           </term>
           <listitem>
-            <para>Do not register with the D-BUS session message bus. Run this terminal in its own process.</para>
+            <para>Run this terminal in its own process instead of forwarding the launch to an existing terminal process, overriding the Launching preference. The per-instance D-BUS control service remains available.</para>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term id="options-general-enable-server">
+            <option>--enable-server</option>
+          </term>
+          <listitem>
+            <para>Reuse an existing terminal launch server, or start one if none exists, overriding the Launching preference. If both server options are supplied, the last one takes precedence.</para>
           </listitem>
         </varlistentry>
 

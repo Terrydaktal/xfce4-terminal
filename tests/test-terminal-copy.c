@@ -10,6 +10,7 @@
 #include "terminal/terminal-window.h"
 
 #include "terminal-test-utils.h"
+#include "test-terminal-launching.h"
 
 static gchar *self;
 
@@ -525,6 +526,7 @@ main (int argc, char **argv)
     return 77;
   self = g_file_read_link ("/proc/self/exe", NULL);
   g_assert_nonnull (self);
+  terminal_launching_register_tests ();
   g_test_add ("/terminal/copy/native-selection", Fixture, NULL,
               setup_window, copy_native_selection, teardown);
   g_test_add ("/terminal/copy/application-selection", Fixture, GINT_TO_POINTER (1),

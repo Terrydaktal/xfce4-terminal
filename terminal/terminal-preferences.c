@@ -85,6 +85,7 @@ enum
   PROP_FONT_ALLOW_BOLD,
   PROP_FONT_NAME,
   PROP_FONT_USE_SYSTEM,
+  PROP_MISC_RUN_IN_SEPARATE_PROCESS,
   PROP_MISC_ALWAYS_SHOW_TABS,
   PROP_MISC_BELL,
   PROP_MISC_BELL_URGENT,
@@ -819,6 +820,16 @@ terminal_preferences_class_init (TerminalPreferencesClass *klass)
     g_param_spec_boolean ("font-use-system",
                           NULL,
                           "FontUseSystem",
+                          FALSE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  /**
+   * TerminalPreferences:misc-run-in-separate-process:
+   **/
+  preferences_props[PROP_MISC_RUN_IN_SEPARATE_PROCESS] =
+    g_param_spec_boolean ("misc-run-in-separate-process",
+                          NULL,
+                          "MiscRunInSeparateProcess",
                           FALSE,
                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 

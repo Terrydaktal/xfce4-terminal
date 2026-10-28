@@ -34,6 +34,7 @@
 #include "terminal-app.h"
 #include "terminal-gdbus.h"
 #include "terminal-preferences-dialog.h"
+#include "terminal-preferences.h"
 #include "terminal-private.h"
 #include "terminal-widget.h"
 #include "terminal-window.h"
@@ -112,7 +113,8 @@ usage (void)
            _("Usage:"), PACKAGE_NAME, _("OPTION"));
 
   g_print ("%s:\n"
-           "  -h, --help; -V, --version; --disable-server; --color-table; --preferences;\n"
+           "  -h, --help; -V, --version; --disable-server; --enable-server;\n"
+           "  --color-table; --preferences;\n"
            "  --default-display=%s; --default-working-directory=%s\n\n",
            _("General Options"),
            /* parameter of --default-display */
@@ -181,8 +183,9 @@ usage (void)
 int
 main (int argc, char **argv)
 {
-  TerminalOptions options;
+  TerminalOptions options = { 0 };
   TerminalApp *app;
+  TerminalPreferences *preferences = NULL;
   const gchar *startup_id;
   GdkDisplay *display;
   GError *error = NULL;
@@ -190,9 +193,6 @@ main (int argc, char **argv)
   gint nargc;
   gint n;
   const gchar *msg;
-
-  /* initialize options */
-  options.disable_server = options.show_version = options.show_colors = options.show_help = options.show_preferences = 0;
 
 #ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
   if (!vte_terminal_has_stream_selection_fix ())
@@ -266,6 +266,16 @@ main (int argc, char **argv)
       return EXIT_SUCCESS;
     }
 
+  if (!options.server_mode_set)
+    {
+      gboolean separate_process;
+
+      /* Decide before forwarding: an existing server cannot honor this preference. */
+      preferences = terminal_preferences_get ();
+      g_object_get (preferences, "misc-run-in-separate-process", &separate_process, NULL);
+      options.disable_server = separate_process;
+    }
+
   /* create a copy of the standard arguments with our additional stuff */
   nargv = g_new (gchar *, argc + 5);
   nargc = 0;
@@ -297,6 +307,7 @@ main (int argc, char **argv)
       if (terminal_gdbus_invoke_launch (nargc, nargv, &error))
         {
           g_strfreev (nargv);
+          g_clear_object (&preferences);
           return EXIT_SUCCESS;
         }
       else
@@ -324,6 +335,7 @@ main (int argc, char **argv)
               g_printerr ("%s: %s\n", PACKAGE_NAME, msg);
               g_error_free (error);
               g_strfreev (nargv);
+              g_clear_object (&preferences);
               return EXIT_FAILURE;
             }
           else if (error != NULL)
@@ -340,6 +352,7 @@ main (int argc, char **argv)
   gtk_window_set_default_icon_name ("org.xfce.terminal");
 
   app = g_object_new (TERMINAL_TYPE_APP, NULL);
+  g_clear_object (&preferences);
 
   if (!terminal_gdbus_register_service (app, !options.disable_server, &error))
     {

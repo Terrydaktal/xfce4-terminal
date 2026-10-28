@@ -70,6 +70,7 @@ links_test = executable(
 copy_test = executable(
   'test-terminal-copy',
   'test-terminal-copy.c',
+  'test-terminal-launching.c',
   '../terminal/terminal-app.c',
   '../terminal/terminal-encoding-action.c',
   '../terminal/terminal-gdbus.c',
@@ -88,6 +89,7 @@ copy_test = executable(
   terminal_enum_header,
   terminal_enum_source,
   xfce_revision_h[0],
+  c_args: ['-DTEST_TERMINAL_BINARY="' + (meson.current_build_dir() / '../terminal/xfce4-terminal') + '"'],
   include_directories: [include_directories('..'), include_directories('../terminal')],
   dependencies: [
     glib, gio, gtk, vte, pcre2, libxfce4ui, libxfce4kbd, libxfce4util, xfconf,
@@ -96,7 +98,8 @@ copy_test = executable(
 )
 
 # Native clipboard ownership must not race other GUI tests on the same display.
-test('terminal-copy', copy_test, timeout: 30, is_parallel: false, env: {'TERM': 'xterm-256color'})
+test('terminal-copy', copy_test, depends: terminal_executable,
+  timeout: 30, is_parallel: false, env: {'TERM': 'xterm-256color'})
 
 test('fork-versioning', find_program('python3'),
   args: files('test-fork-version.py'), timeout: 120)

@@ -1572,6 +1572,18 @@ terminal_preferences_dialog_init (TerminalPreferencesDialog *dialog)
   gtk_widget_show (button);
 
 
+  /* section: Launching */
+  terminal_preferences_dialog_new_section (&frame, &vbox, &grid, &label, &row, _("Launching"));
+
+  button = gtk_check_button_new_with_mnemonic (_("Start each terminal launch in a _separate process"));
+  gtk_widget_set_tooltip_text (button, _("Use the current executable instead of reusing an already-running terminal process. Applies to future launches; existing windows are unaffected."));
+  g_object_bind_property (G_OBJECT (dialog->preferences), "misc-run-in-separate-process",
+                          G_OBJECT (button), "active",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+  gtk_grid_attach (GTK_GRID (grid), button, 0, row, 2, 1);
+  gtk_widget_show (button);
+
+
   /* section: Misc */
   terminal_preferences_dialog_new_section (&frame, &vbox, &grid, &label, &row, _("Misc"));
 

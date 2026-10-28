@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "scope": "Persistent launch-process preference and command-line overrides",
+  "artifacts": ["Meson debugoptimized xfce4-terminal"],
+  "contracts": [
+    {"id": "LAUNCH-01", "behavior": "Advanced contains Launching with a two-way bound separate-process checkbox; process reuse remains the factory default", "tests": ["/terminal/launching/preference-dialog"]},
+    {"id": "LAUNCH-02", "behavior": "Changing the checkbox persists in Xfconf, is readable from a separate process and survives reopening the dialog", "tests": ["/terminal/launching/preference-dialog"]},
+    {"id": "LAUNCH-03", "behavior": "A saved launch preference is applied before forwarding to an existing server; existing windows stay running", "tests": ["/terminal/launching/processes/reuse", "/terminal/launching/processes/separate"]},
+    {"id": "LAUNCH-04", "behavior": "Explicit server flags override either saved value and the last supplied flag wins", "tests": ["/terminal/launching/options/disable", "/terminal/launching/options/enable", "/terminal/launching/options/last-enable", "/terminal/launching/options/last-disable", "/terminal/launching/processes/force-reuse", "/terminal/launching/processes/force-separate", "/terminal/launching/processes/last-enable", "/terminal/launching/processes/last-disable"]},
+    {"id": "LAUNCH-05", "behavior": "Child arguments after execute or the option delimiter do not alter server mode; both server flags are accepted by the window parser", "tests": ["/terminal/launching/options/execute-boundary", "/terminal/launching/options/short-execute-boundary", "/terminal/launching/options/delimiter-boundary", "/terminal/launching/window-parser"]},
+    {"id": "LAUNCH-06", "behavior": "Independent terminal processes retain ListTerminals control services", "tests": ["/terminal/launching/processes/separate", "/terminal/launching/processes/force-separate"]}
+  ],
+  "test_owners": {"launching": "tests/test-terminal-launching.c"},
+  "environments": {
+    "automated_gui": "Private HOME/XDG, Xvfb and session bus; real GTK preference dialog and compiled terminal subprocesses",
+    "native_wayland": "The actual KDE preference dialog should be checked manually; Wayland rendering is not covered by the Xvfb checks"
+  }
+}
