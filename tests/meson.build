@@ -7,6 +7,17 @@ regex_test = executable(
 
 test('terminal-regex', regex_test)
 
+build_monitor_test = executable(
+  'test-terminal-build-monitor',
+  'test-terminal-build-monitor.c',
+  '../terminal/terminal-build-id.c',
+  '../terminal/terminal-build-monitor.c',
+  include_directories: include_directories('..'),
+  dependencies: [glib, gio],
+)
+
+test('terminal-build-monitor', build_monitor_test, timeout: 90, env: {'GIO_USE_VFS': 'local'})
+
 mouse_test = executable(
   'test-terminal-mouse',
   'test-terminal-mouse.c',
@@ -72,6 +83,8 @@ copy_test = executable(
   'test-terminal-copy.c',
   'test-terminal-launching.c',
   '../terminal/terminal-app.c',
+  '../terminal/terminal-build-id.c',
+  '../terminal/terminal-build-monitor.c',
   '../terminal/terminal-encoding-action.c',
   '../terminal/terminal-gdbus.c',
   '../terminal/terminal-image-loader.c',

@@ -117,6 +117,31 @@ push, change launcher links or restart existing terminal windows.
 failure handling, source exports and actual incremental Meson builds in private
 temporary fixtures. The same suite is registered as Meson's `fork-versioning` test.
 
+### Outdated Running Builds
+
+When the local executable that would be launched next has a different GNU ELF
+build ID from this running process, the window title strikes through only its
+`Terminal` label using Unicode combining strokes. Fresh titles are unchanged.
+If a shell or application supplies a title without that label, a struck-through
+`Terminal` suffix is added while outdated; application, project and tab titles
+are otherwise preserved. The indicator clears if the original build is restored.
+
+One shared checker per process monitors the executable and launch symlink,
+debounces relevant filesystem changes for one second, and performs a fallback
+check every 30 seconds. Candidate identity checks run in a background worker;
+unchanged files reuse the cached identity. Nothing is checked during terminal
+output, typing or hover, and no network/version lookup or candidate execution is
+performed. Missing, unreadable, partial or unsupported executables leave the
+last known state unchanged; checking requires GNU ELF build IDs and Linux's
+`/proc/self/exe`. Rendering of the combining strokes depends on the titlebar font.
+
+The repository launcher retains its unresolved entry path so repointing
+`~/.local/bin/xfce4-terminal` to another repository build is detected too. Its
+private `XFCE4_TERMINAL_LAUNCH_PATH` and `XFCE4_TERMINAL_LAUNCH_KIND` variables
+are consumed before GTK starts and are not passed to the shell. Opening a window
+with this rebuilt version enables the checker; already-running older binaries
+cannot acquire it without restarting.
+
 ### Local Path Hyperlinks
 
 This fork can detect local file paths in output when the foreground PTY

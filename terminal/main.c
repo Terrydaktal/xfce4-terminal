@@ -32,6 +32,7 @@
 #endif
 
 #include "terminal-app.h"
+#include "terminal-build-monitor.h"
 #include "terminal-gdbus.h"
 #include "terminal-preferences-dialog.h"
 #include "terminal-preferences.h"
@@ -212,6 +213,8 @@ main (int argc, char **argv)
     g_warning ("Locale not supported by C library.");
 
   g_set_application_name (_("Xfce Terminal"));
+
+  terminal_build_monitor_initialize (argv[0]);
 
   /* initialize GTK: do this before our parsing so GTK parses its options first */
   gtk_init (&argc, &argv);

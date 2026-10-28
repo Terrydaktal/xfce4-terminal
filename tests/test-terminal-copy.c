@@ -6,6 +6,7 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 
+#include "terminal/terminal-build-monitor.h"
 #include "terminal/terminal-screen.h"
 #include "terminal/terminal-window.h"
 
@@ -13,6 +14,23 @@
 #include "test-terminal-launching.h"
 
 static gchar *self;
+static gchar *build_directory;
+static gchar *build_candidate;
+
+static void
+replace_build_candidate (const gchar *source)
+{
+  gchar *contents;
+  gsize length;
+  gchar *temporary = g_strconcat (build_candidate, ".new", NULL);
+
+  g_assert_true (g_file_get_contents (source, &contents, &length, NULL));
+  g_assert_true (g_file_set_contents (temporary, contents, length, NULL));
+  g_assert_cmpint (g_chmod (temporary, 0700), ==, 0);
+  g_assert_cmpint (g_rename (temporary, build_candidate), ==, 0);
+  g_free (temporary);
+  g_free (contents);
+}
 
 static int
 record_input (const gchar *path, gboolean mouse_reporting)
@@ -511,6 +529,70 @@ paste_to_application (Fixture *fixture, gconstpointer data)
   g_free (contents);
 }
 
+static void
+wait_window_title (GtkWidget *window,
+                   const gchar *expected)
+{
+  gint64 deadline = g_get_monotonic_time () + 6 * G_TIME_SPAN_SECOND;
+
+  while (g_strcmp0 (gtk_window_get_title (GTK_WINDOW (window)), expected) != 0
+         && g_get_monotonic_time () < deadline)
+    settle ();
+  g_assert_cmpstr (gtk_window_get_title (GTK_WINDOW (window)), ==, expected);
+}
+
+static void
+window_build_title (Fixture *fixture,
+                    gconstpointer data)
+{
+  const gchar *struck = "T\314\266e\314\266r\314\266m\314\266i\314\266n\314\266a\314\266l\314\266";
+  TerminalTabAttr attr = { 0 };
+  TerminalScreen *first = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
+  TerminalScreen *second = terminal_screen_new (&attr, 80, 24);
+  GtkWidget *other = terminal_window_new (NULL, FALSE, TERMINAL_VISIBILITY_HIDE,
+                                         TERMINAL_VISIBILITY_HIDE, TERMINAL_VISIBILITY_HIDE);
+  gchar *expected = g_strconcat ("Codex - diet - ", struck, NULL);
+  gchar *other_expected = g_strconcat ("Fish - ", struck, NULL);
+  gchar *raw;
+  gboolean urgency = gtk_window_get_urgency_hint (GTK_WINDOW (fixture->window));
+
+  /* Both windows share a checker, but preserve their independent raw tab titles. */
+  g_object_set (first, "custom-title", "Codex - diet - Terminal", NULL);
+  g_object_set (second, "custom-title", "Fish", NULL);
+  terminal_window_add (TERMINAL_WINDOW (other), second);
+  gtk_widget_show (other);
+  wait_window_title (fixture->window, "Codex - diet - Terminal");
+  wait_window_title (other, "Fish");
+  replace_build_candidate ("/usr/bin/true");
+  wait_window_title (fixture->window, expected);
+  wait_window_title (other, other_expected);
+  raw = terminal_screen_get_title (first);
+  g_assert_cmpstr (raw, ==, "Codex - diet - Terminal");
+  g_free (raw);
+  g_assert_cmpint (gtk_window_get_urgency_hint (GTK_WINDOW (fixture->window)), ==, urgency);
+
+  /* A new OSC title while stale must still pass through the decorator. */
+  g_object_set (fixture->preferences, "title-mode", TERMINAL_TITLE_REPLACE, NULL);
+  g_object_set (second, "custom-title", NULL, NULL);
+  vte_terminal_feed (VTE_TERMINAL (find_terminal (GTK_WIDGET (second))), "\033]0;Gemini - Terminal\a", -1);
+  g_free (other_expected);
+  other_expected = g_strconcat ("Gemini - ", struck, NULL);
+  wait_window_title (other, other_expected);
+  replace_build_candidate (self);
+  wait_window_title (fixture->window, "Codex - diet - Terminal");
+  wait_window_title (other, "Gemini - Terminal");
+  g_object_ref (other);
+  gtk_widget_destroy (other);
+  replace_build_candidate ("/usr/bin/true");
+  wait_window_title (fixture->window, expected);
+  g_assert_cmpstr (gtk_window_get_title (GTK_WINDOW (other)), ==, "Gemini - Terminal");
+  g_object_unref (other);
+  replace_build_candidate (self);
+  wait_window_title (fixture->window, "Codex - diet - Terminal");
+  g_free (other_expected);
+  g_free (expected);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -522,11 +604,20 @@ main (int argc, char **argv)
   g_unsetenv ("TMUX_PANE");
   g_setenv ("SHELL", "/bin/sh", TRUE);
   g_test_init (&argc, &argv, NULL);
-  if (!gtk_init_check (&argc, &argv))
-    return 77;
   self = g_file_read_link ("/proc/self/exe", NULL);
   g_assert_nonnull (self);
+  build_directory = g_dir_make_tmp ("terminal-window-build.XXXXXX", NULL);
+  g_assert_nonnull (build_directory);
+  build_candidate = g_build_filename (build_directory, "xfce4-terminal", NULL);
+  replace_build_candidate (self);
+  terminal_build_monitor_initialize (build_candidate);
+  g_assert_null (g_getenv ("XFCE4_TERMINAL_LAUNCH_PATH"));
+  g_assert_null (g_getenv ("XFCE4_TERMINAL_LAUNCH_KIND"));
+  if (!gtk_init_check (&argc, &argv))
+    return 77;
   terminal_launching_register_tests ();
+  g_test_add ("/terminal/title/stale-build-and-rollback", Fixture, NULL,
+              setup_window, window_build_title, teardown);
   g_test_add ("/terminal/copy/native-selection", Fixture, NULL,
               setup_window, copy_native_selection, teardown);
   g_test_add ("/terminal/copy/application-selection", Fixture, GINT_TO_POINTER (1),
@@ -554,6 +645,9 @@ main (int argc, char **argv)
   g_test_add ("/terminal/paste/tmux-inactive-codex-image", Fixture, GINT_TO_POINTER (PASTE_TMUX_INACTIVE_CODEX_IMAGE),
               setup_paste_window, paste_to_application, teardown);
   int result = g_test_run ();
+  remove_test_directory (build_directory);
+  g_free (build_directory);
+  g_free (build_candidate);
   g_free (self);
   return result;
 }
