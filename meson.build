@@ -219,12 +219,14 @@ add_project_arguments(cc.get_supported_arguments(extra_cflags_check), language: 
 add_project_arguments(extra_cflags, language: 'c')
 add_project_arguments(feature_cflags, language: 'c')
 
-xfce_revision_h = vcs_tag(
-  command: ['git', 'rev-parse', '--short', 'HEAD'],
-  fallback: 'UNKNOWN',
-  input: 'xfce-revision.h.in',
-  output: 'xfce-revision.h',
-  replace_string: '@REVISION@',
+xfce_revision_h = custom_target(
+  'fork-build-version',
+  output: ['xfce-revision.h', 'BUILD-VERSION', 'BUILD-ID', 'SOURCE-VERSION', 'SOURCE-COMMIT'],
+  command: [find_program('bash'), files('scripts/generate-build-header.sh'), '@OUTPUT0@'],
+  depend_files: files('xfce-revision.h.in', 'FORK-VERSION', 'FORK-BASE',
+                      'scripts/build-version.sh', 'scripts/source-version.sh'),
+  build_always_stale: true,
+  build_by_default: true,
 )
 
 desktop_files = [

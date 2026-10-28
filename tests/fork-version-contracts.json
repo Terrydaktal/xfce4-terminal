@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "scope": "Commit-derived decimal fork releases and per-build numeric identities",
+  "contracts": [
+    {
+      "id": "VERSION-01",
+      "behavior": "Count first-parent fork commits inclusively from FORK-BASE, add the manual base offset and carry patch/minor at ten; 41 commits produce 0.4.1. Preserve canonical revision and full commit provenance through Git-free exports.",
+      "tests": [
+        "test_commits_advance_release_and_dirty_is_only_diagnostic",
+        "test_decimal_carry_and_git_free_export",
+        "test_missing_export_provenance_is_not_replaced_by_unknown_version",
+        "test_manual_bumps_carry"
+      ]
+    },
+    {
+      "id": "VERSION-02",
+      "behavior": "Each normal Meson terminal build allocates a new locked, atomic local build number, including unchanged-source builds and later commits without reconfiguration. Independent build directories share a repository counter. Dry runs do not allocate; invalid counters cannot replace a generated header.",
+      "tests": [
+        "test_rebuilds_increment_without_changing_tracked_sources",
+        "test_parallel_build_directories_have_distinct_numbers",
+        "test_bad_counter_does_not_replace_header",
+        "test_normal_meson_rebuilds_get_new_versions_without_reconfigure"
+      ]
+    },
+    {
+      "id": "VERSION-03",
+      "behavior": "CLI, About and read-only tmux-mosh inventory report UPSTREAM-forkX.Y.Z-N without hashes, dirty text or a second binary hash suffix. Preserve GNU ELF build IDs for local stale-build checks. Rebuilds do not restart existing desktop windows.",
+      "tests": [
+        "private Xvfb --version probes",
+        "tmux/tests/test_frontend_build_versions.py",
+        "tmux/tests/test_entry_versions.py",
+        "Meson terminal-build-monitor and isolated input/clipboard suites"
+      ]
+    }
+  ],
+  "test_owners": {
+    "versioning": "tests/test-fork-version.py",
+    "generation": "scripts/generate-build-header.sh",
+    "inventory": "../tmux/tests/test_frontend_build_versions.py"
+  },
+  "environments": {
+    "versioning": "Private Git main histories, temporary Meson builds and parallel isolated output directories",
+    "automated_gui": "Private HOME/XDG runtime/config/cache/data, Xvfb and D-Bus; no user windows restarted"
+  },
+  "verification": {
+    "date": "2026-10-23T15:09:57+01:00",
+    "version": "1.2.0-fork0.4.1-1",
+    "source_commit": "b3149143914370fba841044daa5cf38725f5ab43",
+    "first_fork_commit": "e5c37cabe2ca8c56825278948095d157dd60d76e",
+    "fork_commits": 41,
+    "initial_build": "1.2.0-fork0.4.1-0",
+    "current_build_number": 1,
+    "next_build_number": 2,
+    "initial_binary_sha256": "099f9148d83ece56542069542b1a09682ef0c74fbdd9e2892195c284ba07fadd",
+    "current_binary_sha256": "4d1e9d416ff3176b5da3f1ded75c19961b6a65e8e72e67f8db153bc660e1036d",
+    "same_source_revision_between_builds": true,
+    "version_test_methods_passed": 8,
+    "meson_suites_passed": 7,
+    "inventory_tests_passed": 183,
+    "shellcheck": "passed",
+    "shfmt": "passed",
+    "ruff": "passed",
+    "evidence": "/home/lewis/repos/xfce4-terminal/build/fork-version.irQDMH",
+    "activation": "Existing ~/.local/bin symlink resolves to rebuilt build/terminal/xfce4-terminal. No user windows or tmux/Mosh sessions restarted; no commits or pushes."
+  }
+}

@@ -73,7 +73,7 @@ terminal_sources += terminal_enum_source
 executable(
   'xfce4-terminal',
   terminal_sources,
-  sources: xfce_revision_h,
+  sources: xfce_revision_h[0],
   c_args: [
     '-DG_LOG_DOMAIN="@0@"'.format('xfce4-terminal'),
   ],

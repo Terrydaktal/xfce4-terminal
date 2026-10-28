@@ -8,6 +8,12 @@
 /subprojects/.wraplock
 /subprojects/fast_float.wrap
 /subprojects/simdutf.wrap
+/SOURCE-FILES
+/SOURCE-SHA256SUMS
+/SOURCE-VERSION
+/SOURCE-COMMIT
+/BUILD-VERSION
+/BUILD-ID
 __pycache__/
 .pytest_cache/
 

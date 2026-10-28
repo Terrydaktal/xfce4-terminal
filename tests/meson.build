@@ -87,7 +87,7 @@ copy_test = executable(
   terminal_marshal_sources,
   terminal_enum_header,
   terminal_enum_source,
-  xfce_revision_h,
+  xfce_revision_h[0],
   include_directories: [include_directories('..'), include_directories('../terminal')],
   dependencies: [
     glib, gio, gtk, vte, pcre2, libxfce4ui, libxfce4kbd, libxfce4util, xfconf,
@@ -97,6 +97,9 @@ copy_test = executable(
 
 # Native clipboard ownership must not race other GUI tests on the same display.
 test('terminal-copy', copy_test, timeout: 30, is_parallel: false, env: {'TERM': 'xterm-256color'})
+
+test('fork-versioning', find_program('python3'),
+  args: files('test-fork-version.py'), timeout: 120)
 
 if get_option('patched-vte')
   selection_test_env = environment()
