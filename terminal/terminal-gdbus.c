@@ -32,6 +32,7 @@
 #include "terminal-screen.h"
 #include "terminal-window.h"
 #include "terminal-update.h"
+#include "terminal-restart.h"
 
 
 
@@ -60,6 +61,12 @@ static const gchar terminal_gdbus_introspection_xml[] =
       "<method name='CloseForUpdate'><arg type='s' name='window-uuid' direction='in'/>"
         "<arg type='s' name='update-service' direction='in'/></method>"
       "<method name='FinishUpdate'><arg type='s' name='update-service' direction='in'/></method>"
+      "<method name='PrepareTabRestart'><arg type='s' direction='in'/><arg type='u' direction='in'/>"
+        "<arg type='as' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='out'/></method>"
+      "<method name='CommitTabRestart'><arg type='s' direction='in'/><arg type='s' direction='in'/></method>"
+      "<method name='CancelTabRestart'><arg type='s' direction='in'/><arg type='s' direction='in'/></method>"
+      "<method name='GetTabRestartStatus'><arg type='s' direction='in'/><arg type='s' direction='in'/>"
+        "<arg type='s' direction='out'/></method>"
     "</interface>"
   "</node>";
 // clang-format on
@@ -374,6 +381,68 @@ terminal_gdbus_close_update_window (gpointer data)
   return G_SOURCE_REMOVE;
 }
 
+static gboolean
+terminal_gdbus_window_restarting (TerminalWindow *window)
+{
+  GList *tabs = gtk_container_get_children (GTK_CONTAINER (terminal_window_get_notebook (window)));
+  gboolean pending = FALSE;
+  for (GList *link = tabs; link != NULL; link = link->next)
+    pending |= terminal_restart_is_pending (TERMINAL_SCREEN (link->data));
+  g_list_free (tabs);
+  return pending;
+}
+
+static void
+terminal_gdbus_tab_restart (TerminalApp *app, GDBusConnection *connection, const gchar *sender,
+                            const gchar *method, GVariant *parameters, GDBusMethodInvocation *invocation)
+{
+  guint32 uid = G_MAXUINT32;
+  GVariant *reply = sender != NULL ? g_dbus_connection_call_sync (connection,
+      "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+      "GetConnectionUnixUser", g_variant_new ("(s)", sender), G_VARIANT_TYPE ("(u)"),
+      0, 1000, NULL, NULL) : NULL;
+  if (reply != NULL)
+    {
+      g_variant_get (reply, "(u)", &uid);
+      g_variant_unref (reply);
+    }
+  if (uid != getuid ())
+    {
+      g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+                                             "Tab restart caller must belong to the same user");
+      return;
+    }
+  const gchar *tab, *token = NULL, *cwd = NULL;
+  gchar **argv = NULL;
+  guint child = 0;
+  if (g_str_equal (method, "PrepareTabRestart"))
+    g_variant_get (parameters, "(&su^as&s)", &tab, &child, &argv, &cwd);
+  else
+    g_variant_get (parameters, "(&s&s)", &tab, &token);
+  TerminalScreen *screen = terminal_gdbus_find_screen (app, tab);
+  GError *error = NULL;
+  gchar *result = NULL;
+  if (screen == NULL || gtk_widget_in_destruction (GTK_WIDGET (screen)))
+    g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Terminal tab no longer exists");
+  else if (g_str_equal (method, "PrepareTabRestart"))
+    result = terminal_restart_prepare (screen, sender, child, argv, cwd, &error);
+  else if (g_str_equal (method, "CommitTabRestart"))
+    terminal_restart_commit (screen, sender, token, &error);
+  else if (g_str_equal (method, "CancelTabRestart"))
+    terminal_restart_cancel (screen, sender, token, &error);
+  else
+    result = terminal_restart_status (screen, sender, token, &error);
+  if (error != NULL)
+    {
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      g_error_free (error);
+    }
+  else
+    g_dbus_method_invocation_return_value (invocation, result != NULL ? g_variant_new ("(s)", result) : NULL);
+  g_free (result);
+  g_strfreev (argv);
+}
+
 static void
 terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gchar *sender,
                       const gchar *method, GVariant *parameters, GDBusMethodInvocation *invocation)
@@ -425,7 +494,10 @@ terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gcha
   TerminalBuildMonitor *monitor = terminal_build_monitor_get ();
   if (g_str_equal (method, "UpdateInPlace"))
     {
-      if (!terminal_build_monitor_has_update (monitor) && !terminal_update_is_pending (GTK_WINDOW (window)))
+      if (terminal_gdbus_window_restarting (window))
+        g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_BUSY,
+                                              "A program replacement is already using this window");
+      else if (!terminal_build_monitor_has_update (monitor) && !terminal_update_is_pending (GTK_WINDOW (window)))
         g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_FAILED,
                                               "No newer terminal executable is available");
       else if (g_strcmp0 (G_OBJECT_TYPE_NAME (window), "TerminalWindowDropdown") == 0)
@@ -443,7 +515,8 @@ terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gcha
       JsonObject *object = json_object_new ();
       json_object_set_boolean_member (object, "updatable", terminal_build_monitor_has_update (monitor)
           && g_strcmp0 (G_OBJECT_TYPE_NAME (window), "TerminalWindowDropdown") != 0);
-      json_object_set_boolean_member (object, "pending", terminal_update_is_pending (GTK_WINDOW (window)));
+      json_object_set_boolean_member (object, "pending", terminal_update_is_pending (GTK_WINDOW (window))
+          || terminal_gdbus_window_restarting (window));
       json_object_set_string_member (object, "service", terminal_update_get_service (GTK_WINDOW (window)));
       JsonNode *node = json_node_new (JSON_NODE_OBJECT);
       json_node_take_object (node, object);
@@ -539,6 +612,11 @@ terminal_gdbus_method_call (GDBusConnection *connection,
   else if (g_strcmp0 (method_name, TERMINAL_DBUS_METHOD_LIST_TERMINALS) == 0)
     {
       terminal_gdbus_list_terminals (app, invocation);
+    }
+  else if (g_str_equal (method_name, "PrepareTabRestart") || g_str_equal (method_name, "CommitTabRestart")
+           || g_str_equal (method_name, "CancelTabRestart") || g_str_equal (method_name, "GetTabRestartStatus"))
+    {
+      terminal_gdbus_tab_restart (app, connection, sender, method_name, parameters, invocation);
     }
   else if (g_str_equal (method_name, "GetUpdateStatus") || g_str_equal (method_name, "UpdateInPlace")
            || g_str_equal (method_name, "CloseForUpdate"))

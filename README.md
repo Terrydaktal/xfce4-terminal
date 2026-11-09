@@ -175,6 +175,19 @@ it does not restart, update or send input to the application.
 
 ### Update in Place
 
+Application Launcher can separately replace a supported program in an existing
+tab through `PrepareTabRestart(tab_uuid, child_pid, argv, cwd)`, followed by
+`CommitTabRestart(tab_uuid, token)`. Preparation disables input and holds the tab
+open without signalling its child. Tokens belong to the preparing D-Bus
+connection; callers must belong to the same user. `CancelTabRestart` cancels an
+uncommitted handoff, and `GetTabRestartStatus` reports its result. Preparation
+expires after five minutes; committed shutdown/spawn has a ten-second deadline.
+There is no force-kill. The original widget, window and tab UUID stay in place;
+the replacement binary is checked against the prepared file identity. A caller
+must separately verify program/session recovery and absence of unrelated jobs.
+Whole-window updates and tab replacement cannot operate on the same window
+concurrently. This API is acquired only by running the rebuilt terminal binary.
+
 Right-click anywhere in a normal terminal window and choose **Update in Place**
 to replace that whole window with the current local launch target. The action
 is greyed out when the target matches the running build, has not been checked

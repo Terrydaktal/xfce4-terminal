@@ -49,6 +49,7 @@
 #include "terminal-image-loader.h"
 #include "terminal-marshal.h"
 #include "terminal-private.h"
+#include "terminal-restart.h"
 #include "terminal-screen.h"
 #include "terminal-util.h"
 #include "terminal-widget.h"
@@ -1572,6 +1573,9 @@ terminal_screen_vte_child_exited (VteTerminal *terminal,
   /* A screen with an exited child must not remain remotely writable. */
   screen->pid = -1;
 
+  if (terminal_restart_is_pending (screen))
+    return;
+
   if (G_LIKELY (!screen->hold))
     gtk_widget_destroy (GTK_WIDGET (screen));
   else if (show_relaunch_dialog)
@@ -2251,6 +2255,23 @@ terminal_screen_launch_child (TerminalScreen *screen)
       g_strfreev (env);
       g_free (command);
     }
+}
+
+gboolean
+terminal_screen_restart_hold (TerminalScreen *screen, gboolean hold)
+{
+  gboolean previous = screen->hold;
+  screen->hold = hold;
+  return previous;
+}
+
+void
+terminal_screen_replace_child (TerminalScreen *screen, gchar **argv, const gchar *cwd)
+{
+  g_return_if_fail (screen->pid <= 0);
+  terminal_screen_set_custom_command (screen, argv);
+  terminal_screen_set_working_directory (screen, cwd);
+  terminal_screen_launch_child (screen);
 }
 
 

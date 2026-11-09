@@ -112,6 +112,7 @@ copy_test = executable(
   '../terminal/terminal-preferences.c',
   '../terminal/terminal-search-dialog.c',
   '../terminal/terminal-screen.c',
+  '../terminal/terminal-restart.c',
   '../terminal/terminal-tmux.c',
   '../terminal/terminal-util.c',
   '../terminal/terminal-update.c',

@@ -20,6 +20,8 @@ terminal_sources = [
   'terminal-preferences-dialog.h',
   'terminal-preferences.c',
   'terminal-preferences.h',
+  'terminal-restart.c',
+  'terminal-restart.h',
   'terminal-search-dialog.c',
   'terminal-search-dialog.h',
   'terminal-screen.c',

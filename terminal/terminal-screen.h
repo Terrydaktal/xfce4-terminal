@@ -41,6 +41,9 @@ terminal_screen_get_uuid (TerminalScreen *screen);
 GPid
 terminal_screen_get_child_pid (TerminalScreen *screen);
 
+gboolean terminal_screen_restart_hold (TerminalScreen *screen, gboolean hold);
+void terminal_screen_replace_child (TerminalScreen *screen, gchar **argv, const gchar *cwd);
+
 gint
 terminal_screen_get_pty_fd (TerminalScreen *screen);
 
