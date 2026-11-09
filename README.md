@@ -152,7 +152,8 @@ application label is prepended; unrelated title text and the raw OSC/tab title
 are preserved. The application's marker and the terminal's own `Terminal` marker
 are independent. Legacy application-generated strokes on an explicit app label
 are normalized rather than doubled, and removed once the application is known
-to match the current local build.
+to match the current local build. Command-and-directory labels such as
+`fish ~/project` are decorated in place rather than adding a second app name.
 
 Each window checks its active foreground process every two seconds in a worker,
 not during typing, drawing, output or hover. The resolver follows local tmux's

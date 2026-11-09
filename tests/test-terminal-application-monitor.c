@@ -391,12 +391,40 @@ title_format (void)
   g_free (expected);
 }
 
+static void
+title_with_directory (void)
+{
+  const gchar *input[] = { "fish ~", "fish ~ - Terminal", "fish ~/repos/project - Terminal",
+                           "fish /tmp/project - Terminal", "fish ~/directory with spaces - Terminal",
+                           "notes - fish ~/repos/project - Terminal" };
+  const gchar *expected[] = { "f\314\266i\314\266s\314\266h\314\266 ~",
+                              "f\314\266i\314\266s\314\266h\314\266 ~ - Terminal",
+                              "f\314\266i\314\266s\314\266h\314\266 ~/repos/project - Terminal",
+                              "f\314\266i\314\266s\314\266h\314\266 /tmp/project - Terminal",
+                              "f\314\266i\314\266s\314\266h\314\266 ~/directory with spaces - Terminal",
+                              "notes - f\314\266i\314\266s\314\266h\314\266 ~/repos/project - Terminal" };
+
+  for (guint i = 0; i < G_N_ELEMENTS (input); i++)
+    {
+      gchar *stale = terminal_application_title_format (input[i], "fish", TRUE);
+      gchar *twice = terminal_application_title_format (stale, "fish", TRUE);
+      gchar *fresh = terminal_application_title_format (stale, "fish", FALSE);
+      g_assert_cmpstr (stale, ==, expected[i]);
+      g_assert_cmpstr (twice, ==, expected[i]);
+      g_assert_cmpstr (fresh, ==, input[i]);
+      g_free (stale);
+      g_free (twice);
+      g_free (fresh);
+    }
+}
+
 int
 main (int argc, char **argv)
 {
   g_test_init (&argc, &argv, NULL);
   g_setenv ("TERM", "xterm-256color", TRUE);
   g_test_add_func ("/application/title-format", title_format);
+  g_test_add_func ("/application/title-with-directory", title_with_directory);
   g_test_add ("/application/replacement-and-rollback", Fixture, NULL, setup, replacement, teardown);
   g_test_add ("/application/exec-in-same-pid", Fixture, GINT_TO_POINTER (1), setup, replacement, teardown);
   g_test_add ("/application/identical-build-new-inode", Fixture, NULL, setup, same_build, teardown);

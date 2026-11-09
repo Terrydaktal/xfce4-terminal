@@ -48,8 +48,8 @@
     },
     {
       "id": "APP-BUILD-07",
-      "behavior": "Decorate only an explicit application label or prepend a new label, preserve raw OSC titles and unrelated path/text components, normalize legacy strokes idempotently, and keep Terminal's independent marker.",
-      "tests": ["/application/title-format", "/terminal/title/active-application-build", "/terminal/title/stale-build-and-rollback"]
+      "behavior": "Decorate only an explicit application label, including command-and-directory titles such as fish ~/project, or prepend a new label; preserve raw OSC titles and unrelated path/text components, normalize legacy strokes idempotently without duplicating the shell name, and keep Terminal's independent marker.",
+      "tests": ["/application/title-format", "/application/title-with-directory", "/terminal/title/active-application-build", "/terminal/title/stale-build-and-rollback"]
     }
   ]
 }

@@ -548,8 +548,9 @@ terminal_application_monitor_is_stale (TerminalApplicationMonitor *monitor)
 }
 
 /* Match labels only at the beginning or as an explicit " - label" component,
- * never an incidental word inside a path or conversation title. Accept a legacy
- * application-owned strike without adding a second combining character. */
+ * including command-and-directory titles, never incidental words inside prose.
+ * Accept a legacy application-owned strike without adding a second combining
+ * character. */
 gchar *
 terminal_application_title_format (const gchar *title,
                                    const gchar *label,
@@ -576,7 +577,10 @@ terminal_application_title_format (const gchar *title,
           if (g_str_has_prefix (cursor, "\314\266"))
             cursor += 2;
         }
-      if (boundary && *letter == '\0' && (*cursor == '\0' || g_str_has_prefix (cursor, " - ") || g_str_has_prefix (cursor, ": ")))
+      if (boundary && *letter == '\0'
+          && (*cursor == '\0' || g_str_has_prefix (cursor, " - ") || g_str_has_prefix (cursor, ": ")
+              || g_str_has_prefix (cursor, " /") || g_str_has_prefix (cursor, " ~/")
+              || g_str_equal (cursor, " ~") || g_str_has_prefix (cursor, " ~ - ")))
         {
           while (position < cursor)
             {
