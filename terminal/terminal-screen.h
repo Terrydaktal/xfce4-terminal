@@ -111,6 +111,9 @@ terminal_screen_copy_clipboard (TerminalScreen *screen);
 void
 terminal_screen_copy_clipboard_html (TerminalScreen *screen);
 void
+terminal_screen_copy_all_clipboard (TerminalScreen *screen,
+                                    gboolean as_html);
+void
 terminal_screen_paste_clipboard (TerminalScreen *screen);
 void
 terminal_screen_paste_primary (TerminalScreen *screen);

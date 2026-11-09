@@ -2685,7 +2685,22 @@ terminal_screen_copy_clipboard_html (TerminalScreen *screen)
 
 
 
-
+/**
+ * terminal_screen_copy_all_clipboard:
+ * @screen  : A #TerminalScreen.
+ * @as_html : Whether to include formatted HTML on the clipboard.
+ *
+ * Selects and copies the visible screen and all retained terminal scrollback.
+ **/
+void
+terminal_screen_copy_all_clipboard (TerminalScreen *screen,
+                                    gboolean as_html)
+{
+  g_return_if_fail (TERMINAL_IS_SCREEN (screen));
+  vte_terminal_select_all (VTE_TERMINAL (screen->terminal));
+  vte_terminal_copy_clipboard_format (VTE_TERMINAL (screen->terminal),
+                                     as_html ? VTE_FORMAT_HTML : VTE_FORMAT_TEXT);
+}
 
 
 

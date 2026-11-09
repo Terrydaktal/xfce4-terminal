@@ -422,9 +422,17 @@ Forwarding the shortcut does not itself provide an application clipboard backend
 or add OSC52 support to VTE. A terminal-owned Shift+drag selection can always be
 copied locally, including over SSH.
 
+The right-click and Edit menus place **Copy All Scrollback** and **Copy All
+Scrollback as HTML** directly below **Copy as HTML**, with copy icons. Both work
+without a prior selection and include the visible screen plus all retained
+terminal scrollback. HTML preserves colours and formatting; plain-text
+destinations receive HTML source, as with Copy as HTML. These actions copy the
+terminal's own buffer, not tmux's separate history.
+
 `test-terminal-copy` exercises the actual window accelerator and PTY, including
-application highlighting, native selection precedence, and an isolated tmux
-server. Run GUI tests under Xvfb, serially to avoid shared clipboard ownership:
+application highlighting, native selection precedence, full-scrollback exports,
+menu ordering and icons, and an isolated tmux server. Run GUI tests under Xvfb,
+serially to avoid shared clipboard ownership:
 
 ```sh
 xvfb-run -a meson test -C build --num-processes 1 --print-errorlogs

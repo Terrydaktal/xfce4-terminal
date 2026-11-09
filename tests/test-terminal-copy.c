@@ -197,6 +197,133 @@ copy_native_selection (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
 }
 
 static void
+find_menu_image (GtkWidget *widget, gpointer data)
+{
+  GtkWidget **image = data;
+
+  if (*image != NULL)
+    return;
+  if (GTK_IS_IMAGE (widget))
+    *image = widget;
+  else if (GTK_IS_CONTAINER (widget))
+    gtk_container_forall (GTK_CONTAINER (widget), find_menu_image, image);
+}
+
+static void
+feed_full_scrollback (Fixture *fixture)
+{
+  GString *output = g_string_new ("\033[2J\033[H\033[1;38;2;255;0;0mscrollback-first <&> \317\200\033[0m\r\n");
+  vte_terminal_set_scrollback_lines (fixture->terminal, 1000);
+  for (guint i = 0; i < 120; i++)
+    g_string_append_printf (output, "scrollback-line-%03u\r\n", i);
+  g_string_append (output, "scrollback-last");
+  vte_terminal_feed (fixture->terminal, output->str, output->len);
+  g_string_free (output, TRUE);
+  settle ();
+  g_assert_cmpint (vte_terminal_get_row_count (fixture->terminal), <, 120);
+}
+
+
+static void
+copy_all_scrollback (Fixture *fixture, gconstpointer data)
+{
+  const gboolean as_html = GPOINTER_TO_INT (data);
+  const gchar *labels[] = { "_Copy", "Copy as _HTML", "Copy All Scrollback", "Copy All Scrollback as HTML" };
+  TerminalScreen *screen = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
+  GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
+  GtkSettings *settings = gtk_widget_get_settings (fixture->widget);
+  GdkAtom html_target = gdk_atom_intern_static_string ("text/html");
+  GtkWidget *menu = NULL;
+  GtkWidget *copy_items[G_N_ELEMENTS (labels)] = { NULL };
+  GList *items;
+  gchar *text;
+  gchar buffer[16];
+  gboolean menu_images;
+
+  feed_full_scrollback (fixture);
+  g_assert_false (vte_terminal_get_has_selection (fixture->terminal));
+
+  g_object_get (settings, "gtk-menu-images", &menu_images, NULL);
+  g_object_set (settings, "gtk-menu-images", FALSE, NULL);
+  g_signal_emit_by_name (screen, "get-context-menu", &menu);
+  g_assert_nonnull (menu);
+  g_object_ref_sink (menu);
+  gtk_widget_show_all (menu);
+  items = gtk_container_get_children (GTK_CONTAINER (menu));
+  for (GList *item = items; item != NULL; item = item->next)
+    for (guint i = 0; i < G_N_ELEMENTS (labels); i++)
+      if (g_strcmp0 (gtk_menu_item_get_label (item->data), labels[i]) == 0)
+        {
+          g_assert_null (copy_items[i]);
+          if (i > 0)
+            {
+              g_assert_nonnull (copy_items[i - 1]);
+              g_assert_nonnull (item->prev);
+              g_assert_true (item->prev->data == copy_items[i - 1]);
+            }
+          copy_items[i] = item->data;
+        }
+  g_list_free (items);
+  for (guint i = 0; i < G_N_ELEMENTS (labels); i++)
+    {
+      g_assert_nonnull (copy_items[i]);
+      g_assert_cmpint (gtk_widget_get_sensitive (copy_items[i]), ==, i >= 2);
+      if (i >= 2)
+        {
+          GtkWidget *image = NULL;
+          const gchar *icon_name = NULL;
+          find_menu_image (copy_items[i], &image);
+          g_assert_true (GTK_IS_IMAGE (image));
+          g_assert_true (gtk_widget_get_visible (image));
+          gtk_image_get_icon_name (GTK_IMAGE (image), &icon_name, NULL);
+          g_assert_cmpstr (icon_name, ==, "edit-copy");
+        }
+    }
+
+  gtk_clipboard_set_text (clipboard, "previous clipboard", -1);
+  gtk_menu_item_activate (GTK_MENU_ITEM (copy_items[as_html ? 3 : 2]));
+  text = gtk_clipboard_wait_for_text (clipboard);
+  g_assert_nonnull (text);
+  g_assert_nonnull (strstr (text, as_html ? "scrollback-first &lt;&amp;&gt; \317\200" : "scrollback-first <&> \317\200"));
+  g_assert_nonnull (strstr (text, "scrollback-last"));
+  for (guint i = 0; i < 120; i++)
+    {
+      gchar *line = g_strdup_printf ("scrollback-line-%03u", i);
+      g_assert_nonnull (strstr (text, line));
+      g_free (line);
+    }
+  g_assert_cmpint (gtk_clipboard_wait_is_target_available (clipboard, html_target), ==, as_html);
+  if (as_html)
+    {
+      GtkSelectionData *selection = gtk_clipboard_wait_for_contents (clipboard, html_target);
+      GError *error = NULL;
+      gchar *html;
+      g_assert_nonnull (selection);
+      g_assert_cmpint (gtk_selection_data_get_length (selection), >, 0);
+      html = g_convert ((const gchar *) gtk_selection_data_get_data (selection),
+                        gtk_selection_data_get_length (selection), "UTF-8", "UTF-16", NULL, NULL, &error);
+      g_assert_no_error (error);
+      g_assert_nonnull (html);
+      g_assert_cmpstr (html, ==, text);
+      g_assert_nonnull (strstr (html, "scrollback-first &lt;&amp;&gt; \317\200"));
+      g_assert_nonnull (strstr (html, "scrollback-last"));
+      g_assert_nonnull (strstr (html, "#FF0000"));
+      g_assert_nonnull (strstr (html, "<b>"));
+      g_free (html);
+      gtk_selection_data_free (selection);
+    }
+  g_free (text);
+  g_assert_true (vte_terminal_get_has_selection (fixture->terminal));
+  g_assert_cmpint (read (fixture->slave, buffer, sizeof buffer), ==, -1);
+  g_assert_cmpint (errno, ==, EAGAIN);
+  gtk_clipboard_clear (clipboard);
+  gtk_widget_destroy (menu);
+  g_object_unref (menu);
+  g_object_set (settings, "gtk-menu-images", menu_images, NULL);
+}
+
+
+static void
 copy_application_selection (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
 {
   GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
@@ -880,6 +1007,10 @@ main (int argc, char **argv)
               setup_window, window_build_title, teardown);
   g_test_add ("/terminal/copy/native-selection", Fixture, NULL,
               setup_window, copy_native_selection, teardown);
+  g_test_add ("/terminal/copy/all-scrollback-text", Fixture, NULL,
+              setup_window, copy_all_scrollback, teardown);
+  g_test_add ("/terminal/copy/all-scrollback-html", Fixture, GINT_TO_POINTER (TRUE),
+              setup_window, copy_all_scrollback, teardown);
   g_test_add ("/terminal/copy/application-selection", Fixture, GINT_TO_POINTER (1),
               setup_window, copy_application_selection, teardown);
   g_test_add ("/terminal/copy/no-selection-interrupt", Fixture, NULL,

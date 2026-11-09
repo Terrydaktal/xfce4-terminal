@@ -236,6 +236,10 @@ terminal_window_action_copy (TerminalWindow *window);
 static gboolean
 terminal_window_action_copy_html (TerminalWindow *window);
 static gboolean
+terminal_window_action_copy_all (TerminalWindow *window);
+static gboolean
+terminal_window_action_copy_all_html (TerminalWindow *window);
+static gboolean
 terminal_window_action_paste (TerminalWindow *window);
 static gboolean
 terminal_window_action_paste_selection (TerminalWindow *window);
@@ -546,6 +550,26 @@ static XfceGtkActionEntry action_entries[] = {
     N_ ("Copy to clipboard as HTML"),
     "edit-copy",
     G_CALLBACK (terminal_window_action_copy_html),
+  },
+  {
+    TERMINAL_WINDOW_ACTION_COPY_ALL,
+    "<Actions>/terminal-window/copy-all",
+    "",
+    XFCE_GTK_IMAGE_MENU_ITEM,
+    N_ ("Copy All Scrollback"),
+    N_ ("Copy the entire terminal scrollback to the clipboard"),
+    "edit-copy",
+    G_CALLBACK (terminal_window_action_copy_all),
+  },
+  {
+    TERMINAL_WINDOW_ACTION_COPY_ALL_HTML,
+    "<Actions>/terminal-window/copy-all-html",
+    "",
+    XFCE_GTK_IMAGE_MENU_ITEM,
+    N_ ("Copy All Scrollback as HTML"),
+    N_ ("Copy the entire terminal scrollback to the clipboard as HTML"),
+    "edit-copy",
+    G_CALLBACK (terminal_window_action_copy_all_html),
   },
   {
     TERMINAL_WINDOW_ACTION_PASTE,
@@ -2545,6 +2569,26 @@ terminal_window_action_copy_html (TerminalWindow *window)
 
 
 static gboolean
+terminal_window_action_copy_all (TerminalWindow *window)
+{
+  if (G_LIKELY (window->priv->active != NULL))
+    terminal_screen_copy_all_clipboard (window->priv->active, FALSE);
+  return TRUE;
+}
+
+
+
+static gboolean
+terminal_window_action_copy_all_html (TerminalWindow *window)
+{
+  if (G_LIKELY (window->priv->active != NULL))
+    terminal_screen_copy_all_clipboard (window->priv->active, TRUE);
+  return TRUE;
+}
+
+
+
+static gboolean
 terminal_window_action_paste (TerminalWindow *window)
 {
   if (G_LIKELY (window->priv->active != NULL))
@@ -4038,6 +4082,10 @@ terminal_window_menu_add_section (TerminalWindow *window,
       gtk_widget_set_sensitive (item, terminal_screen_has_selection (window->priv->active));
       item = xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_COPY_HTML), G_OBJECT (window), GTK_MENU_SHELL (insert_to_menu));
       gtk_widget_set_sensitive (item, terminal_screen_has_selection (window->priv->active));
+      item = xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_COPY_ALL), G_OBJECT (window), GTK_MENU_SHELL (insert_to_menu));
+      g_object_set (item, "always-show-image", TRUE, NULL);
+      item = xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_COPY_ALL_HTML), G_OBJECT (window), GTK_MENU_SHELL (insert_to_menu));
+      g_object_set (item, "always-show-image", TRUE, NULL);
       xfce_gtk_menu_append_separator (GTK_MENU_SHELL (menu));
     }
 
