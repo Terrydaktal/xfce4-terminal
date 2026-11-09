@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scope": "Application-owned running code is identified locally; xfce4-terminal owns only build comparison and title decoration, independently of its terminal-build marker.",
+  "scope": "xfce4-terminal resolves the active local process and decorates titles; applicationlauncherd owns native executable freshness, independently of terminal-owned Update in Place validation.",
   "environments": {
     "processes": "Linux /proc, private PTYs, two real native ELF fixtures with different GNU build IDs, private tmux socket/server",
     "gui": "Real TerminalWindow/TerminalScreen/VTE under isolated xfconf/session bus and Xvfb; no user terminals restarted"
@@ -8,7 +8,9 @@
   "test_owners": {
     "processes": "tests/test-terminal-application-monitor.c",
     "gui": "tests/test-terminal-copy.c",
-    "fixtures": "tests/fixtures/application-monitor-child.c"
+    "fixtures": "tests/fixtures/application-monitor-child.c",
+    "protocol": "tests/test-terminal-freshness-client.c",
+    "service_oracle": "tests/fixtures/freshness_service.py"
   },
   "contracts": [
     {
@@ -43,13 +45,23 @@
     },
     {
       "id": "APP-BUILD-06",
-      "behavior": "Tab changes discard pending worker results and detach old binary watches. No worker callback updates a destroyed window.",
+      "behavior": "Tab changes discard pending process selection and D-Bus results. No worker callback updates a destroyed window.",
       "tests": ["/application/stale-task-after-tab-switch", "/terminal/title/active-application-build"]
     },
     {
       "id": "APP-BUILD-07",
       "behavior": "Decorate only an explicit application label, including command-and-directory titles such as fish ~/project, or prepend a new label; preserve raw OSC titles and unrelated path/text components, normalize legacy strokes idempotently without duplicating the shell name, and keep Terminal's independent marker.",
       "tests": ["/application/title-format", "/application/title-with-directory", "/terminal/title/active-application-build", "/terminal/title/stale-build-and-rollback"]
+    },
+    {
+      "id": "APP-BUILD-09",
+      "behavior": "Daemon status is authoritative: service absence/restart, malformed replies and mismatched target identities are unknown; no local comparison supplies a fallback marker.",
+      "tests": ["/freshness/no-daemon-no-local-fallback", "/freshness/daemon-restart", "/freshness/malformed-unknown", "/freshness/wrong-identity-unknown"]
+    },
+    {
+      "id": "APP-BUILD-10",
+      "behavior": "Only the pinned daemon owner may change status; older report generations and replies from previous tab targets cannot overwrite newer cached status.",
+      "tests": ["/freshness/cached-signal-and-ordering", "/freshness/late-reply-after-signal", "/freshness/late-reply-after-tab-switch", "/freshness/non-owner-signal-ignored"]
     }
   ]
 }

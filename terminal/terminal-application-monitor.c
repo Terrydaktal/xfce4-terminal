@@ -9,7 +9,7 @@
 
 #include "terminal-application-monitor.h"
 #include "terminal-build-id.h"
-#include "terminal-build-monitor.h"
+#include "terminal-freshness-client.h"
 #include "terminal-tmux.h"
 
 typedef struct
@@ -20,7 +20,6 @@ typedef struct
   gchar *executable;
   gchar *label;
   gchar *launch_path;
-  gchar *build_id;
   struct stat image;
 } Application;
 
@@ -41,7 +40,7 @@ struct _TerminalApplicationMonitor
   gboolean checking;
   gboolean check_again;
   Application *application;
-  TerminalBuildMonitor *build;
+  TerminalFreshnessClient *freshness;
 };
 
 G_DEFINE_TYPE (TerminalApplicationMonitor, terminal_application_monitor, G_TYPE_OBJECT)
@@ -55,7 +54,6 @@ application_free (gpointer data)
   g_free (application->executable);
   g_free (application->label);
   g_free (application->launch_path);
-  g_free (application->build_id);
   g_free (application);
 }
 
@@ -408,21 +406,17 @@ check_worker (GTask *task,
   application = resolve_application (group, group, 0, &remaining);
   if (application != NULL)
     {
-      gchar *path = g_strdup_printf ("/proc/%d/exe", (gint) application->pid);
       Application *after;
       if (same_application (application, check->previous))
         {
-          application->build_id = g_strdup (check->previous->build_id);
           application->launch_path = g_strdup (check->previous->launch_path);
         }
       else
         {
-          application->build_id = terminal_build_id_read (path);
           application->launch_path = launch_path (application);
         }
-      g_free (path);
       after = read_application (application->pid);
-      if (!same_application (application, after) || application->build_id == NULL
+      if (!same_application (application, after)
           || tcgetpgrp (check->fd) != group)
         g_clear_pointer (&application, application_free);
       application_free (after);
@@ -432,7 +426,7 @@ check_worker (GTask *task,
 }
 
 static void
-build_checked (TerminalBuildMonitor *build,
+build_checked (TerminalFreshnessClient *client,
                TerminalApplicationMonitor *monitor)
 {
   g_signal_emit_by_name (monitor, "changed");
@@ -441,9 +435,7 @@ build_checked (TerminalBuildMonitor *build,
 static void
 clear_application (TerminalApplicationMonitor *monitor)
 {
-  if (monitor->build != NULL)
-    g_signal_handlers_disconnect_by_data (monitor->build, monitor);
-  g_clear_object (&monitor->build);
+  terminal_freshness_client_set_target (monitor->freshness, 0, 0, 0, 0, NULL);
   g_clear_pointer (&monitor->application, application_free);
 }
 
@@ -466,9 +458,9 @@ check_finished (GObject *object,
           application = NULL;
           if (monitor->application != NULL)
             {
-              monitor->build = terminal_build_monitor_new_for_id (monitor->application->build_id,
-                                                                  monitor->application->launch_path);
-              g_signal_connect (monitor->build, "checked", G_CALLBACK (build_checked), monitor);
+              terminal_freshness_client_set_target (monitor->freshness, monitor->application->pid,
+                monitor->application->start, monitor->application->image.st_dev,
+                monitor->application->image.st_ino, monitor->application->launch_path);
             }
           g_signal_emit_by_name (monitor, "changed");
         }
@@ -508,7 +500,6 @@ terminal_application_monitor_refresh (TerminalApplicationMonitor *monitor)
       check->previous->executable = g_strdup (monitor->application->executable);
       check->previous->label = g_strdup (monitor->application->label);
       check->previous->launch_path = g_strdup (monitor->application->launch_path);
-      check->previous->build_id = g_strdup (monitor->application->build_id);
     }
   monitor->checking = TRUE;
   task = g_task_new (monitor, NULL, check_finished, NULL);
@@ -544,7 +535,7 @@ terminal_application_monitor_get_label (TerminalApplicationMonitor *monitor)
 gboolean
 terminal_application_monitor_is_stale (TerminalApplicationMonitor *monitor)
 {
-  return monitor->build != NULL && terminal_build_monitor_is_stale (monitor->build);
+  return terminal_freshness_client_is_stale (monitor->freshness);
 }
 
 /* Match labels only at the beginning or as an explicit " - label" component,
@@ -615,7 +606,7 @@ gchar *
 terminal_application_monitor_format_title (TerminalApplicationMonitor *monitor,
                                            const gchar *title)
 {
-  if (monitor->build == NULL || (!terminal_build_monitor_is_known (monitor->build) && !terminal_build_monitor_is_stale (monitor->build)))
+  if (monitor->application == NULL || !terminal_freshness_client_is_known (monitor->freshness))
     return g_strdup (title);
   return terminal_application_title_format (title, terminal_application_monitor_get_label (monitor),
                                             terminal_application_monitor_is_stale (monitor));
@@ -627,7 +618,9 @@ terminal_application_monitor_finalize (GObject *object)
   TerminalApplicationMonitor *monitor = TERMINAL_APPLICATION_MONITOR (object);
   if (monitor->fd >= 0)
     close (monitor->fd);
+  g_signal_handlers_disconnect_by_data (monitor->freshness, monitor);
   clear_application (monitor);
+  g_clear_object (&monitor->freshness);
   G_OBJECT_CLASS (terminal_application_monitor_parent_class)->finalize (object);
 }
 
@@ -644,6 +637,8 @@ terminal_application_monitor_init (TerminalApplicationMonitor *monitor)
 {
   monitor->fd = -1;
   monitor->original_fd = -1;
+  monitor->freshness = terminal_freshness_client_new ();
+  g_signal_connect_object (monitor->freshness, "changed", G_CALLBACK (build_checked), monitor, 0);
 }
 
 TerminalApplicationMonitor *

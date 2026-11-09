@@ -18,6 +18,11 @@ build_monitor_test = executable(
 
 test('terminal-build-monitor', build_monitor_test, timeout: 90, env: {'GIO_USE_VFS': 'local'})
 
+freshness_test = executable('test-terminal-freshness-client',
+  'test-terminal-freshness-client.c', '../terminal/terminal-freshness-client.c',
+  include_directories: include_directories('..'), dependencies: [glib, gio, json_glib])
+test('terminal-freshness-client', freshness_test, timeout: 30)
+
 application_fixture = executable('application-monitor-child',
   'fixtures/application-monitor-child.c', c_args: ['-DFIXTURE_VERSION=1'], install: false)
 application_fixture_next = executable('application-monitor-child-next',
@@ -25,12 +30,14 @@ application_fixture_next = executable('application-monitor-child-next',
 application_monitor_test = executable('test-terminal-application-monitor',
   'test-terminal-application-monitor.c',
   '../terminal/terminal-application-monitor.c',
+  '../terminal/terminal-freshness-client.c',
   '../terminal/terminal-build-monitor.c',
   '../terminal/terminal-build-id.c',
   '../terminal/terminal-tmux.c',
   c_args: ['-DAPPLICATION_FIXTURE="' + application_fixture.full_path() + '"',
+           '-DTEST_FRESHNESS_SERVICE="' + (meson.current_source_dir() / 'fixtures/freshness_service.py') + '"',
            '-DAPPLICATION_FIXTURE_NEXT="' + application_fixture_next.full_path() + '"'],
-  include_directories: include_directories('..'), dependencies: [glib, gio])
+  include_directories: include_directories('..'), dependencies: [glib, gio, json_glib])
 test('terminal-application-monitor', application_monitor_test,
   depends: [application_fixture, application_fixture_next], timeout: 60,
   env: {'GIO_USE_VFS': 'local'})
@@ -102,6 +109,7 @@ copy_test = executable(
   'test-terminal-update.c',
   '../terminal/terminal-app.c',
   '../terminal/terminal-application-monitor.c',
+  '../terminal/terminal-freshness-client.c',
   '../terminal/terminal-build-id.c',
   '../terminal/terminal-build-monitor.c',
   '../terminal/terminal-encoding-action.c',
@@ -124,6 +132,7 @@ copy_test = executable(
   terminal_enum_source,
   xfce_revision_h[0],
   c_args: ['-DTEST_TERMINAL_BINARY="' + (meson.current_build_dir() / '../terminal/xfce4-terminal') + '"',
+           '-DTEST_FRESHNESS_SERVICE="' + (meson.current_source_dir() / 'fixtures/freshness_service.py') + '"',
            '-DAPPLICATION_FIXTURE="' + application_fixture.full_path() + '"',
            '-DAPPLICATION_FIXTURE_NEXT="' + application_fixture_next.full_path() + '"',
            '-DTEST_UPDATE_WORKER="' + (meson.current_source_dir() / 'fixtures/update_worker.py') + '"'],

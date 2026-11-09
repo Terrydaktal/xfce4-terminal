@@ -126,21 +126,26 @@ If a shell or application supplies a title without that label, a struck-through
 `Terminal` suffix is added while outdated; application, project and tab titles
 are otherwise preserved. The indicator clears if the original build is restored.
 
-One shared checker per process monitors the executable and launch symlink,
-debounces relevant filesystem changes for one second, and performs a fallback
-check every 30 seconds. Candidate identity checks run in a background worker;
-unchanged files reuse the cached identity. Nothing is checked during terminal
-output, typing or hover, and no network/version lookup or candidate execution is
-performed. Missing, unreadable, partial or unsupported executables leave the
-last known state unchanged; checking requires GNU ELF build IDs and Linux's
-`/proc/self/exe`. Rendering of the combining strokes depends on the titlebar font.
+`applicationlauncherd` owns freshness status for both this terminal and its
+foreground application. The terminal subscribes asynchronously to the daemon's
+`/Freshness` D-Bus interface and renders cached results; it does not run a second
+foreground build checker. The daemon checks subscribed targets every two seconds,
+reuses unchanged ELF identities, and expires subscriptions after 60 seconds unless
+renewed (the terminal renews every 20 seconds). No candidate programs, network
+queries or version commands are executed. Missing, unreadable, partial or
+unsupported executables produce `unknown`, not an outdated marker. If the daemon
+is absent, incompatible or restarts, daemon-derived markers clear until a valid
+reply arrives; there is no local title-checking fallback. Rendering of combining
+strokes depends on the titlebar font.
 
 The repository launcher retains its unresolved entry path so repointing
 `~/.local/bin/xfce4-terminal` to another repository build is detected too. Its
 private `XFCE4_TERMINAL_LAUNCH_PATH` and `XFCE4_TERMINAL_LAUNCH_KIND` variables
 are consumed before GTK starts and are not passed to the shell. Opening a window
-with this rebuilt version enables the checker; already-running older binaries
-cannot acquire it without restarting.
+with this rebuilt version enables the integration; already-running older binaries
+cannot acquire it without restarting. The terminal's local build monitor remains
+solely for Update in Place availability and independent replacement validation;
+restart policy and transaction coordination use the daemon's lifecycle API.
 
 ### Application Build Indicators
 
@@ -160,18 +165,29 @@ not during typing, drawing, output or hover. The resolver follows local tmux's
 active pane and bounded shell/runtime wrappers to a unique native application.
 PID start time and executable inode guard against process reuse and same-PID
 `exec`; switching tabs invalidates pending checks immediately. A stable process
-reuses its captured running build ID and launch entry. The existing one-second
-filesystem debounce and 30-second fallback monitor changes to that entry.
+retains its launch entry and sends a pinned PID/start-time/device/inode identity
+to the daemon. Reports are bound to that target and the daemon's unique bus owner;
+generation checks reject delayed replies from older targets or older inspections.
+The daemon performs the running/on-disk comparison off its D-Bus dispatcher.
 
 Launch checking uses the application's own executable/arguments and, where it
 identifies that same executable, its own PATH. It never chooses an unrelated
 installation from the terminal's PATH, executes `--version`, parses arbitrary
-wrapper scripts or contacts a server. Absolute native launch entries and
+wrapper scripts or contacts a network service. Absolute native launch entries and
 identified launch symlinks are retained across replacements. Remote SSH/Mosh,
 ambiguous wrapper children, interpreted applications without an identifiable
 native child, and images without GNU ELF build IDs remain unmarked. This is a
 comparison with the current local launch target, not an upstream update check;
 it does not restart, update or send input to the application.
+
+`meson test -C build terminal-freshness-client terminal-application-monitor
+terminal-copy` covers protocol failures, daemon restart, reply ordering and title
+integration on private session buses (GUI checks need Xvfb or a test display).
+To test the actual Rust service instead of the independent test oracle, build
+Application Launcher's `freshness-service` example with `cargo build --release
+--example freshness-service`, then set `TERMINAL_TEST_FRESHNESS_SERVICE` to its
+absolute executable path when running those tests. The example serves the real
+daemon module on the private bus and is not installed as a user service.
 
 ### Update in Place
 

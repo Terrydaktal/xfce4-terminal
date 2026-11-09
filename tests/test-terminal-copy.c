@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 
 #include "terminal/terminal-build-monitor.h"
+#include "terminal/terminal-freshness-client.h"
 #include "terminal/terminal-screen.h"
 #include "terminal/terminal-window.h"
 #include "terminal/terminal-update.h"
@@ -14,6 +15,7 @@
 #include "terminal-test-utils.h"
 #include "test-terminal-launching.h"
 #include "test-terminal-update.h"
+#include "freshness-test-service.h"
 
 static gchar *self;
 static gchar *build_directory;
@@ -22,13 +24,19 @@ static gchar *build_candidate;
 static void
 replace_build_candidate (const gchar *source)
 {
-  gchar *contents;
+  gchar *contents = NULL;
   gsize length;
   gchar *temporary = g_strconcat (build_candidate, ".new", NULL);
 
-  g_assert_true (g_file_get_contents (source, &contents, &length, NULL));
-  g_assert_true (g_file_set_contents (temporary, contents, length, NULL));
-  g_assert_cmpint (g_chmod (temporary, 0700), ==, 0);
+  if (g_str_equal (source, self))
+    /* Establish an actual launch alias, not an unrelated copy of the same build. */
+    g_assert_cmpint (symlink (source, temporary), ==, 0);
+  else
+    {
+      g_assert_true (g_file_get_contents (source, &contents, &length, NULL));
+      g_assert_true (g_file_set_contents (temporary, contents, length, NULL));
+      g_assert_cmpint (g_chmod (temporary, 0700), ==, 0);
+    }
   g_assert_cmpint (g_rename (temporary, build_candidate), ==, 0);
   g_free (temporary);
   g_free (contents);
@@ -544,9 +552,24 @@ wait_window_title (GtkWidget *window,
 }
 
 static void
+wait_current_launch_alias (void)
+{
+  TerminalFreshnessClient *client = terminal_freshness_client_new ();
+  terminal_freshness_client_set_target (client, getpid (), 0, 0, 0, build_candidate);
+  gint64 deadline = g_get_monotonic_time () + 6 * G_TIME_SPAN_SECOND;
+  while (!terminal_freshness_client_is_known (client) && g_get_monotonic_time () < deadline)
+    settle ();
+  g_assert_true (terminal_freshness_client_is_known (client));
+  g_assert_false (terminal_freshness_client_is_stale (client));
+  g_object_unref (client);
+}
+
+static void
 window_build_title (Fixture *fixture,
                     gconstpointer data)
 {
+  GSubprocess *service = freshness_test_service_start ();
+  wait_current_launch_alias ();
   const gchar *struck = "T\314\266e\314\266r\314\266m\314\266i\314\266n\314\266a\314\266l\314\266";
   TerminalTabAttr attr = { 0 };
   TerminalScreen *first = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
@@ -593,6 +616,7 @@ window_build_title (Fixture *fixture,
   wait_window_title (fixture->window, "Codex - diet - Terminal");
   g_free (other_expected);
   g_free (expected);
+  freshness_test_service_stop (service);
 }
 
 static void
@@ -612,6 +636,8 @@ replace_application_image (const gchar *source,
 static void
 window_application_title (void)
 {
+  GSubprocess *service = freshness_test_service_start ();
+  wait_current_launch_alias ();
   const gchar *struck = "c\314\266o\314\266d\314\266e\314\266x\314\266";
   const gchar *struck_terminal = "T\314\266e\314\266r\314\266m\314\266i\314\266n\314\266a\314\266l\314\266";
   gchar *directory = g_dir_make_tmp ("terminal-window-application.XXXXXX", NULL);
@@ -678,6 +704,7 @@ window_application_title (void)
   g_free (directory);
   g_free (expected);
   g_free (both);
+  freshness_test_service_stop (service);
 }
 
 static void

@@ -11,6 +11,7 @@
 
 #include "terminal/terminal-application-monitor.h"
 #include "terminal/terminal-build-id.h"
+#include "freshness-test-service.h"
 
 typedef struct
 {
@@ -421,6 +422,26 @@ title_with_directory (void)
 int
 main (int argc, char **argv)
 {
+  if (g_getenv ("TERMINAL_APPLICATION_TEST_BUS") == NULL)
+    {
+      GPtrArray *command = g_ptr_array_new ();
+      g_ptr_array_add (command, "dbus-run-session");
+      g_ptr_array_add (command, "--");
+      for (gint i = 0; i < argc; i++) g_ptr_array_add (command, argv[i]);
+      g_ptr_array_add (command, NULL);
+      GSubprocessLauncher *launcher = g_subprocess_launcher_new (G_SUBPROCESS_FLAGS_NONE);
+      g_subprocess_launcher_setenv (launcher, "TERMINAL_APPLICATION_TEST_BUS", "1", TRUE);
+      GError *error = NULL;
+      GSubprocess *test = g_subprocess_launcher_spawnv (launcher, (const gchar * const *) command->pdata, &error);
+      g_assert_no_error (error);
+      g_assert_true (g_subprocess_wait (test, NULL, &error));
+      g_assert_no_error (error);
+      gint status = g_subprocess_get_if_exited (test) ? g_subprocess_get_exit_status (test) : 1;
+      g_object_unref (test);
+      g_object_unref (launcher);
+      g_ptr_array_unref (command);
+      return status;
+    }
   g_test_init (&argc, &argv, NULL);
   g_setenv ("TERM", "xterm-256color", TRUE);
   g_test_add_func ("/application/title-format", title_format);
@@ -437,5 +458,8 @@ main (int argc, char **argv)
   g_test_add ("/application/launch-symlink-retarget", Fixture, NULL, setup, retarget, teardown);
   g_test_add ("/application/stale-task-after-tab-switch", Fixture, NULL, setup, target_changed, teardown);
   g_test_add ("/application/tmux-active-pane", Fixture, NULL, setup, through_tmux, teardown);
-  return g_test_run ();
+  GSubprocess *service = freshness_test_service_start ();
+  gint result = g_test_run ();
+  freshness_test_service_stop (service);
+  return result;
 }

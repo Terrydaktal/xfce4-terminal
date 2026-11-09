@@ -8,6 +8,8 @@ terminal_sources = [
   'terminal-build-id.h',
   'terminal-build-monitor.c',
   'terminal-build-monitor.h',
+  'terminal-freshness-client.c',
+  'terminal-freshness-client.h',
   'terminal-encoding-action.c',
   'terminal-encoding-action.h',
   'terminal-gdbus.c',
