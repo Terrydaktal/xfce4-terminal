@@ -56,6 +56,12 @@
 #include "terminal-window-dropdown.h"
 #include "terminal-window.h"
 
+#ifdef HAVE_PRIVATE_VTE_SCROLLBACK_EXPORT
+extern gchar *vte_terminal_get_scrollback_format (VteTerminal *terminal,
+                                                 VteFormat format,
+                                                 gsize *length);
+#endif
+
 /* offset of saturation random value */
 #define SATURATION_WINDOW 0.20
 
@@ -3215,14 +3221,47 @@ terminal_screen_set_scroll_on_output (TerminalScreen *screen,
 
 
 
-void
-terminal_screen_save_contents (TerminalScreen *screen,
-                               GOutputStream *stream,
-                               GError *error)
+gboolean
+terminal_screen_save_scrollback (TerminalScreen *screen,
+                                 GOutputStream *stream,
+                                 gboolean as_html,
+                                 GError **error)
 {
-  g_return_if_fail (TERMINAL_IS_SCREEN (screen));
-  vte_terminal_write_contents_sync (VTE_TERMINAL (screen->terminal),
-                                    stream, VTE_WRITE_DEFAULT, NULL, &error);
+  VteTerminal *terminal;
+
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), FALSE);
+  g_return_val_if_fail (G_IS_OUTPUT_STREAM (stream), FALSE);
+  terminal = VTE_TERMINAL (screen->terminal);
+  if (!as_html)
+    {
+      gboolean saved = vte_terminal_write_contents_sync (terminal, stream, VTE_WRITE_DEFAULT, NULL, error);
+      if (!saved && error != NULL && *error == NULL)
+        g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, _("Failed to read terminal scrollback"));
+      return saved;
+    }
+
+#ifdef HAVE_PRIVATE_VTE_SCROLLBACK_EXPORT
+  gsize length;
+  /* Range extraction preserves the selection, clipboard and scroll position. */
+  gchar *html = vte_terminal_get_scrollback_format (terminal, VTE_FORMAT_HTML, &length);
+  const gchar *header = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Terminal Scrollback</title></head><body>\n";
+  const gchar *footer = "\n</body></html>\n";
+  gboolean saved;
+
+  if (html == NULL)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, _("Failed to read terminal scrollback as HTML"));
+      return FALSE;
+    }
+  saved = g_output_stream_write_all (stream, header, strlen (header), NULL, NULL, error)
+          && g_output_stream_write_all (stream, html, length, NULL, NULL, error)
+          && g_output_stream_write_all (stream, footer, strlen (footer), NULL, NULL, error);
+  g_free (html);
+  return saved;
+#else
+  g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED, _("Saving all scrollback as HTML requires the bundled VTE library"));
+  return FALSE;
+#endif
 }
 
 

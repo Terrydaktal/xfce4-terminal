@@ -135,7 +135,17 @@ run_isolated (int argc, char **argv)
   g_assert_no_error (error);
   launcher = g_subprocess_launcher_new (G_SUBPROCESS_FLAGS_NONE);
   g_subprocess_launcher_setenv (launcher, "TERMINAL_MOUSE_TEST_SESSION", "1", TRUE);
+  g_subprocess_launcher_setenv (launcher, "HOME", config, TRUE);
   g_subprocess_launcher_setenv (launcher, "XDG_CONFIG_HOME", config, TRUE);
+  const gchar *variables[] = { "XDG_DATA_HOME", "XDG_CACHE_HOME" };
+  const gchar *directories[] = { "data", "cache" };
+  for (guint i = 0; i < G_N_ELEMENTS (variables); i++)
+    {
+      gchar *path = g_build_filename (config, directories[i], NULL);
+      g_assert_cmpint (g_mkdir_with_parents (path, 0700), ==, 0);
+      g_subprocess_launcher_setenv (launcher, variables[i], path, TRUE);
+      g_free (path);
+    }
   g_subprocess_launcher_setenv (launcher, "GDK_BACKEND", "x11", TRUE);
   g_subprocess_launcher_setenv (launcher, "GTK_THEME", "Adwaita", TRUE);
   g_subprocess_launcher_setenv (launcher, "NO_AT_BRIDGE", "1", TRUE);

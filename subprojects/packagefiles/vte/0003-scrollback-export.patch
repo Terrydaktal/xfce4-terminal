@@ -1,0 +1,36 @@
+--- a/src/vtegtk.cc
++++ b/src/vtegtk.cc
+@@ -5189,6 +5189,33 @@
+                                                         length);
+ }
+ 
++extern "C" {
++_VTE_PUBLIC
++char* vte_terminal_get_scrollback_format(VteTerminal* terminal,
++                                         VteFormat format,
++                                         gsize* length) noexcept;
++}
++
++/* Private full-buffer export: GTK scroll adjustments use relative row offsets. */
++char*
++vte_terminal_get_scrollback_format(VteTerminal* terminal,
++                                    VteFormat format,
++                                    gsize* length) noexcept
++try
++{
++        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
++        auto const impl = IMPL(terminal);
++        return _vte_terminal_get_text_range_format_full(terminal, format,
++                                                        impl->m_screen->row_data->delta(), 0,
++                                                        impl->m_screen->row_data->next(), 0,
++                                                        false, length);
++}
++catch (...)
++{
++        vte::log_exception();
++        return nullptr;
++}
++
+ /**
+  * vte_terminal_reset:
+  * @terminal: a #VteTerminal

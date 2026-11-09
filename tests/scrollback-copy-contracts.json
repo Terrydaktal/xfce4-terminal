@@ -1,36 +1,16 @@
 {
   "schema_version": 1,
-  "scope": "Full terminal scrollback clipboard actions",
-  "artifacts": [
-    "Meson debugoptimized xfce4-terminal"
-  ],
+  "scope": "Full terminal scrollback clipboard and file export actions",
+  "artifacts": ["Meson debugoptimized xfce4-terminal"],
   "contracts": [
-    {
-      "id": "SCROLLBACK-COPY-01",
-      "behavior": "The shared right-click and Edit Copy section orders Copy, Copy as HTML, Copy All Scrollback and Copy All Scrollback as HTML consecutively; both full-scrollback actions have visible copy icons even with GTK menu images disabled and remain enabled without a selection",
-      "tests": [
-        "/terminal/copy/all-scrollback-text",
-        "/terminal/copy/all-scrollback-html"
-      ]
-    },
-    {
-      "id": "SCROLLBACK-COPY-02",
-      "behavior": "Copy All Scrollback copies plain text from the visible screen and retained offscreen history, including Unicode, without sending any input to the child",
-      "tests": [
-        "/terminal/copy/all-scrollback-text"
-      ]
-    },
-    {
-      "id": "SCROLLBACK-COPY-03",
-      "behavior": "Copy All Scrollback as HTML offers HTML source via text targets and a UTF-16 text/html payload for rich-text destinations, preserving bold, colour, Unicode and escaped markup across the full retained buffer without sending input to the child",
-      "tests": [
-        "/terminal/copy/all-scrollback-html"
-      ]
-    }
+    {"id": "SCROLLBACK-COPY-01", "behavior": "The shared right-click and Edit Copy section orders Copy, Copy as HTML, Copy All Scrollback, Copy All Scrollback as HTML, Save All Scrollback and Save All Scrollback as HTML consecutively; the full-scrollback actions have visible copy/save icons even with GTK menu images disabled and remain enabled without a selection", "tests": ["/terminal/copy/all-scrollback-text", "/terminal/copy/all-scrollback-html"]},
+    {"id": "SCROLLBACK-COPY-02", "behavior": "Copy All Scrollback copies plain text from the visible screen and retained offscreen history, including Unicode, without sending any input to the child", "tests": ["/terminal/copy/all-scrollback-text"]},
+    {"id": "SCROLLBACK-COPY-03", "behavior": "Copy All Scrollback as HTML offers HTML source via text targets and a UTF-16 text/html payload for rich-text destinations, preserving bold, colour, Unicode and escaped markup across the full retained buffer without sending input to the child", "tests": ["/terminal/copy/all-scrollback-html"]},
+    {"id": "SCROLLBACK-SAVE-01", "behavior": "The actual save menu actions open overwrite-confirming file choosers with .txt/.html defaults and export visible plus offscreen content as UTF-8 text or a standalone HTML document retaining colour, bold and escaped markup; exports leave the clipboard, child PTY and scroll position unchanged", "tests": ["/terminal/save/all-scrollback-text", "/terminal/save/all-scrollback-html"]},
+    {"id": "SCROLLBACK-SAVE-02", "behavior": "Cancelling either dialog creates no export and does not overwrite an existing file; write errors reach the caller rather than disappearing", "tests": ["/terminal/save/cancel-text", "/terminal/save/cancel-html", "/terminal/save/write-error-text", "/terminal/save/write-error-html"]},
+    {"id": "SCROLLBACK-SAVE-03", "behavior": "Empty buffers produce valid exports and discarded history is not resurrected; the HTML range includes the last retained content even when the oldest retained row is no longer zero", "tests": ["/terminal/save/empty-and-truncated-text", "/terminal/save/empty-and-truncated-html"]}
   ],
-  "test_owners": {
-    "scrollback_copy": "tests/test-terminal-copy.c"
-  },
+  "test_owners": {"scrollback_copy": "tests/test-terminal-copy.c"},
   "environments": {
     "automated_gui": "Private HOME/XDG, Xvfb and session bus; real GTK menu actions, VTE buffer, PTY and clipboard targets",
     "native_wayland": "Cross-application Wayland clipboard transfer is not covered by the Xvfb checks"

@@ -75,6 +75,7 @@ if get_option('patched-vte')
   # main.c calls a symbol exported only by the patched library. A missing
   # private library must fail at load time instead of silently using system VTE.
   feature_cflags += '-DHAVE_PRIVATE_VTE_SELECTION_FIX=1'
+  feature_cflags += '-DHAVE_PRIVATE_VTE_SCROLLBACK_EXPORT=1'
 endif
 
 enable_x11 = not get_option('x11').disabled()

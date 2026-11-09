@@ -173,10 +173,11 @@ void
 terminal_screen_set_scroll_on_output (TerminalScreen *screen,
                                       gboolean enabled);
 
-void
-terminal_screen_save_contents (TerminalScreen *screen,
-                               GOutputStream *stream,
-                               GError *error);
+gboolean
+terminal_screen_save_scrollback (TerminalScreen *screen,
+                                 GOutputStream *stream,
+                                 gboolean as_html,
+                                 GError **error);
 
 gboolean
 terminal_screen_has_foreground_process (TerminalScreen *screen);

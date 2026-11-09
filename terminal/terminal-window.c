@@ -293,7 +293,9 @@ terminal_window_action_search_next (TerminalWindow *window);
 static gboolean
 terminal_window_action_search_prev (TerminalWindow *window);
 static gboolean
-terminal_window_action_save_contents (TerminalWindow *window);
+terminal_window_action_save_all (TerminalWindow *window);
+static gboolean
+terminal_window_action_save_all_html (TerminalWindow *window);
 static gboolean
 terminal_window_action_reset (TerminalWindow *window);
 static gboolean
@@ -572,6 +574,26 @@ static XfceGtkActionEntry action_entries[] = {
     G_CALLBACK (terminal_window_action_copy_all_html),
   },
   {
+    TERMINAL_WINDOW_ACTION_SAVE_ALL,
+    "<Actions>/terminal-window/save-contents", /* Preserve existing accelerator bindings. */
+    "",
+    XFCE_GTK_IMAGE_MENU_ITEM,
+    N_ ("Save All Scrollback..."),
+    N_ ("Save the visible screen and retained scrollback to a text file"),
+    "document-save-as",
+    G_CALLBACK (terminal_window_action_save_all),
+  },
+  {
+    TERMINAL_WINDOW_ACTION_SAVE_ALL_HTML,
+    "<Actions>/terminal-window/save-all-html",
+    "",
+    XFCE_GTK_IMAGE_MENU_ITEM,
+    N_ ("Save All Scrollback as HTML..."),
+    N_ ("Save the visible screen and retained scrollback with formatting"),
+    "document-save-as",
+    G_CALLBACK (terminal_window_action_save_all_html),
+  },
+  {
     TERMINAL_WINDOW_ACTION_PASTE,
     "<Actions>/terminal-window/paste",
     "<control><shift>v",
@@ -770,16 +792,6 @@ static XfceGtkActionEntry action_entries[] = {
     NULL,
     NULL,
     G_CALLBACK (terminal_window_action_search_prev),
-  },
-  {
-    TERMINAL_WINDOW_ACTION_SAVE_CONTENTS,
-    "<Actions>/terminal-window/save-contents",
-    "",
-    XFCE_GTK_IMAGE_MENU_ITEM,
-    N_ ("Sa_ve Contents..."),
-    NULL,
-    "document-save-as",
-    G_CALLBACK (terminal_window_action_save_contents),
   },
   {
     TERMINAL_WINDOW_ACTION_RESET,
@@ -2240,9 +2252,6 @@ terminal_window_get_context_menu (TerminalScreen *screen,
 
   terminal_window_menu_add_section (window, context_menu, MENU_SECTION_ZOOM | MENU_SECTION_SIGNAL, TRUE);
 
-  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_SAVE_CONTENTS), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
-  xfce_gtk_menu_append_separator (GTK_MENU_SHELL (context_menu));
-
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_PREFERENCES), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
 
   /* hide accel labels */
@@ -3211,28 +3220,31 @@ terminal_window_action_search_prev (TerminalWindow *window)
 
 
 static gboolean
-terminal_window_action_save_contents (TerminalWindow *window)
+terminal_window_save_scrollback (TerminalWindow *window,
+                                 gboolean as_html)
 {
   GtkWidget *dialog;
   GFile *file;
   GOutputStream *stream;
   GError *error = NULL;
-  gchar *filename_uri;
+  TerminalScreen *screen;
   gint response;
 
   g_return_val_if_fail (window->priv->active != NULL, FALSE);
+  screen = g_object_ref (window->priv->active);
 
-  dialog = gtk_file_chooser_dialog_new (_("Save contents..."),
+  dialog = gtk_file_chooser_dialog_new (as_html ? _("Save All Scrollback as HTML") : _("Save All Scrollback"),
                                         GTK_WINDOW (window),
                                         GTK_FILE_CHOOSER_ACTION_SAVE, _("_Cancel"),
                                         GTK_RESPONSE_CANCEL, _("_Save"),
                                         GTK_RESPONSE_ACCEPT,
                                         NULL);
   gtk_file_chooser_set_do_overwrite_confirmation (GTK_FILE_CHOOSER (dialog), TRUE);
+  gtk_file_chooser_set_current_name (GTK_FILE_CHOOSER (dialog), as_html ? "scrollback.html" : "scrollback.txt");
 
   /* save to current working directory */
   gtk_file_chooser_set_current_folder (GTK_FILE_CHOOSER (dialog),
-                                       terminal_screen_get_working_directory (TERMINAL_SCREEN (window->priv->active)));
+                                       terminal_screen_get_working_directory (screen));
 
   gtk_window_set_transient_for (GTK_WINDOW (dialog), GTK_WINDOW (window));
   gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
@@ -3241,35 +3253,54 @@ terminal_window_action_save_contents (TerminalWindow *window)
   gtk_widget_show_all (dialog);
 
   response = gtk_dialog_run (GTK_DIALOG (dialog));
-  if (response != GTK_RESPONSE_ACCEPT)
+  file = response == GTK_RESPONSE_ACCEPT ? gtk_file_chooser_get_file (GTK_FILE_CHOOSER (dialog)) : NULL;
+  gtk_widget_destroy (dialog);
+
+  if (file == NULL)
     {
-      gtk_widget_destroy (dialog);
+      g_object_unref (screen);
       return TRUE;
     }
 
-  filename_uri = gtk_file_chooser_get_uri (GTK_FILE_CHOOSER (dialog));
-  gtk_widget_destroy (dialog);
-
-  if (filename_uri == NULL)
-    return TRUE;
-
-  file = g_file_new_for_uri (filename_uri);
   stream = G_OUTPUT_STREAM (g_file_replace (file, NULL, FALSE, G_FILE_CREATE_NONE, NULL, &error));
   if (stream)
     {
-      terminal_screen_save_contents (TERMINAL_SCREEN (window->priv->active), stream, error);
+      if (terminal_screen_save_scrollback (screen, stream, as_html, &error))
+        g_output_stream_close (stream, NULL, &error);
+      else
+        {
+          /* Abort replacement instead of committing a partially written export. */
+          GCancellable *cancel = g_cancellable_new ();
+          g_cancellable_cancel (cancel);
+          g_output_stream_close (stream, cancel, NULL);
+          g_object_unref (cancel);
+        }
       g_object_unref (stream);
     }
 
   if (error)
     {
-      xfce_dialog_show_error (GTK_WINDOW (window), error, _("Failed to save terminal contents"));
+      xfce_dialog_show_error (GTK_WINDOW (window), error, _("Failed to save terminal scrollback"));
       g_error_free (error);
     }
 
   g_object_unref (file);
-  g_free (filename_uri);
+  g_object_unref (screen);
   return TRUE;
+}
+
+
+static gboolean
+terminal_window_action_save_all (TerminalWindow *window)
+{
+  return terminal_window_save_scrollback (window, FALSE);
+}
+
+
+static gboolean
+terminal_window_action_save_all_html (TerminalWindow *window)
+{
+  return terminal_window_save_scrollback (window, TRUE);
 }
 
 
@@ -4086,6 +4117,13 @@ terminal_window_menu_add_section (TerminalWindow *window,
       g_object_set (item, "always-show-image", TRUE, NULL);
       item = xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_COPY_ALL_HTML), G_OBJECT (window), GTK_MENU_SHELL (insert_to_menu));
       g_object_set (item, "always-show-image", TRUE, NULL);
+      item = xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_SAVE_ALL), G_OBJECT (window), GTK_MENU_SHELL (insert_to_menu));
+      g_object_set (item, "always-show-image", TRUE, NULL);
+      item = xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_SAVE_ALL_HTML), G_OBJECT (window), GTK_MENU_SHELL (insert_to_menu));
+      g_object_set (item, "always-show-image", TRUE, NULL);
+#ifndef HAVE_PRIVATE_VTE_SCROLLBACK_EXPORT
+      gtk_widget_set_sensitive (item, FALSE);
+#endif
       xfce_gtk_menu_append_separator (GTK_MENU_SHELL (menu));
     }
 
@@ -4213,8 +4251,6 @@ terminal_window_update_terminal_menu (TerminalWindow *window,
   xfce_gtk_menu_append_separator (GTK_MENU_SHELL (menu));
   xfce_gtk_toggle_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_READ_ONLY), G_OBJECT (window), !terminal_screen_get_input_enabled (window->priv->active), GTK_MENU_SHELL (menu));
   xfce_gtk_toggle_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_SCROLL_ON_OUTPUT), G_OBJECT (window), terminal_screen_get_scroll_on_output (window->priv->active), GTK_MENU_SHELL (menu));
-  xfce_gtk_menu_append_separator (GTK_MENU_SHELL (menu));
-  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_SAVE_CONTENTS), G_OBJECT (window), GTK_MENU_SHELL (menu));
   xfce_gtk_menu_append_separator (GTK_MENU_SHELL (menu));
   terminal_window_menu_add_section (window, menu, MENU_SECTION_SIGNAL, TRUE);
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_RESET), G_OBJECT (window), GTK_MENU_SHELL (menu));

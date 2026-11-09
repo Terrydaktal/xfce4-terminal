@@ -228,7 +228,8 @@ static void
 copy_all_scrollback (Fixture *fixture, gconstpointer data)
 {
   const gboolean as_html = GPOINTER_TO_INT (data);
-  const gchar *labels[] = { "_Copy", "Copy as _HTML", "Copy All Scrollback", "Copy All Scrollback as HTML" };
+  const gchar *labels[] = { "_Copy", "Copy as _HTML", "Copy All Scrollback", "Copy All Scrollback as HTML",
+                            "Save All Scrollback...", "Save All Scrollback as HTML..." };
   TerminalScreen *screen = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
   GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
   GtkSettings *settings = gtk_widget_get_settings (fixture->widget);
@@ -276,7 +277,7 @@ copy_all_scrollback (Fixture *fixture, gconstpointer data)
           g_assert_true (GTK_IS_IMAGE (image));
           g_assert_true (gtk_widget_get_visible (image));
           gtk_image_get_icon_name (GTK_IMAGE (image), &icon_name, NULL);
-          g_assert_cmpstr (icon_name, ==, "edit-copy");
+          g_assert_cmpstr (icon_name, ==, i < 4 ? "edit-copy" : "document-save-as");
         }
     }
 
@@ -322,6 +323,190 @@ copy_all_scrollback (Fixture *fixture, gconstpointer data)
   g_object_set (settings, "gtk-menu-images", menu_images, NULL);
 }
 
+
+typedef struct
+{
+  Fixture *fixture;
+  const gchar *directory;
+  gboolean as_html, cancel;
+  guint attempts;
+  GtkWidget *dialog;
+} SaveDialog;
+
+static gboolean
+respond_save_dialog (gpointer data)
+{
+  SaveDialog *save = data;
+  GList *windows = gtk_window_list_toplevels ();
+  g_assert_cmpuint (++save->attempts, <, 100);
+  for (GList *item = windows; item != NULL; item = item->next)
+    if (GTK_IS_FILE_CHOOSER_DIALOG (item->data)
+        && gtk_window_get_transient_for (item->data) == GTK_WINDOW (save->fixture->window))
+      {
+        GtkFileChooser *chooser = GTK_FILE_CHOOSER (item->data);
+        if (save->dialog == NULL)
+          {
+            gchar *name = gtk_file_chooser_get_current_name (chooser);
+            g_assert_cmpstr (name, ==, save->as_html ? "scrollback.html" : "scrollback.txt");
+            g_free (name);
+            g_assert_true (gtk_file_chooser_get_do_overwrite_confirmation (chooser));
+            g_assert_true (gtk_file_chooser_set_current_folder (chooser, save->directory));
+            gtk_file_chooser_set_current_name (chooser, "custom export");
+            save->dialog = item->data;
+          }
+        else
+          gtk_dialog_response (GTK_DIALOG (item->data), save->cancel ? GTK_RESPONSE_CANCEL : GTK_RESPONSE_ACCEPT);
+        break;
+      }
+  g_list_free (windows);
+  return G_SOURCE_CONTINUE;
+}
+
+static void
+save_all_scrollback (Fixture *fixture, gconstpointer data)
+{
+  gboolean as_html = GPOINTER_TO_INT (data) & 1;
+  gboolean cancel = GPOINTER_TO_INT (data) & 2;
+  TerminalScreen *screen = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
+  GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
+  GtkAdjustment *adjustment = gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (fixture->terminal));
+  gchar *directory = g_dir_make_tmp ("terminal-save-scrollback.XXXXXX", NULL);
+  gchar *path = g_build_filename (directory, "custom export", NULL);
+  GtkWidget *menu = NULL, *action = NULL;
+  SaveDialog save = { fixture, directory, as_html, cancel, 0, NULL };
+  gchar *before, *after, *text;
+  gchar buffer[16];
+
+  if (cancel && !as_html)
+    g_assert_true (g_file_set_contents (path, "existing export must remain", -1, NULL));
+  feed_full_scrollback (fixture);
+  vte_terminal_select_all (fixture->terminal);
+  before = vte_terminal_get_text_selected (fixture->terminal, VTE_FORMAT_TEXT);
+  gtk_clipboard_set_text (clipboard, "clipboard must not change", -1);
+  gtk_adjustment_set_value (adjustment, gtk_adjustment_get_lower (adjustment));
+  gdouble position = gtk_adjustment_get_value (adjustment);
+  GOutputStream *snapshot = g_memory_output_stream_new_resizable ();
+  GError *error = NULL;
+  g_assert_true (terminal_screen_save_scrollback (screen, snapshot, as_html, &error));
+  g_assert_no_error (error);
+  g_object_unref (snapshot);
+  after = vte_terminal_get_text_selected (fixture->terminal, VTE_FORMAT_TEXT);
+  g_assert_cmpstr (before, ==, after);
+  g_free (after);
+  g_free (before);
+  g_signal_emit_by_name (screen, "get-context-menu", &menu);
+  g_assert_nonnull (menu);
+  g_object_ref_sink (menu);
+  GList *items = gtk_container_get_children (GTK_CONTAINER (menu));
+  for (GList *item = items; item != NULL; item = item->next)
+    {
+      const gchar *label = gtk_menu_item_get_label (item->data);
+      g_assert_cmpstr (label, !=, "Sa_ve Contents...");
+      if (g_strcmp0 (label, as_html ? "Save All Scrollback as HTML..." : "Save All Scrollback...") == 0)
+        {
+          g_assert_null (action);
+          action = item->data;
+        }
+    }
+  g_list_free (items);
+  g_assert_nonnull (action);
+  guint timer = g_timeout_add (50, respond_save_dialog, &save);
+  gtk_menu_item_activate (GTK_MENU_ITEM (action));
+  g_source_remove (timer);
+  g_assert_nonnull (save.dialog);
+  if (cancel && !as_html)
+    {
+      g_assert_true (g_file_get_contents (path, &text, NULL, NULL));
+      g_assert_cmpstr (text, ==, "existing export must remain");
+      g_free (text);
+    }
+  else if (cancel)
+    g_assert_false (g_file_test (path, G_FILE_TEST_EXISTS));
+  else
+    {
+      g_assert_true (g_file_get_contents (path, &text, NULL, NULL));
+      g_assert_true (g_utf8_validate (text, -1, NULL));
+      g_assert_nonnull (strstr (text, as_html ? "scrollback-first &lt;&amp;&gt; \317\200" : "scrollback-first <&> \317\200"));
+      g_assert_nonnull (strstr (text, "scrollback-last"));
+      for (guint i = 0; i < 120; i++)
+        {
+          gchar *line = g_strdup_printf ("scrollback-line-%03u", i);
+          g_assert_nonnull (strstr (text, line));
+          g_free (line);
+        }
+      if (as_html)
+        {
+          g_assert_true (g_str_has_prefix (text, "<!doctype html>"));
+          g_assert_nonnull (strstr (text, "<meta charset=\"utf-8\">"));
+          g_assert_nonnull (strstr (text, "#FF0000"));
+          g_assert_nonnull (strstr (text, "<b>"));
+          g_assert_true (g_str_has_suffix (text, "</body></html>\n"));
+        }
+      else
+        g_assert_null (strstr (text, "<pre>"));
+      g_free (text);
+    }
+  text = gtk_clipboard_wait_for_text (clipboard);
+  g_assert_cmpstr (text, ==, "clipboard must not change");
+  g_free (text);
+  g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, position);
+  g_assert_cmpint (read (fixture->slave, buffer, sizeof buffer), ==, -1);
+  g_assert_cmpint (errno, ==, EAGAIN);
+  gtk_clipboard_clear (clipboard);
+  gtk_widget_destroy (menu);
+  g_object_unref (menu);
+  remove_test_directory (directory);
+  g_free (path);
+  g_free (directory);
+}
+
+static void
+save_scrollback_empty_and_truncated (Fixture *fixture, gconstpointer data)
+{
+  TerminalScreen *screen = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
+  gboolean as_html = GPOINTER_TO_INT (data);
+  feed_full_scrollback (fixture);
+  vte_terminal_set_scrollback_lines (fixture->terminal, 12);
+  settle ();
+  GtkAdjustment *adjustment = gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (fixture->terminal));
+  glong row;
+  vte_terminal_get_cursor_position (fixture->terminal, NULL, &row);
+  g_assert_cmpfloat (row, >, gtk_adjustment_get_upper (adjustment));
+  for (guint empty = 0; empty < 2; empty++)
+    {
+      GOutputStream *stream = g_memory_output_stream_new_resizable ();
+      GError *error = NULL;
+      g_assert_true (terminal_screen_save_scrollback (screen, stream, as_html, &error));
+      g_assert_no_error (error);
+      gsize length = g_memory_output_stream_get_data_size (G_MEMORY_OUTPUT_STREAM (stream));
+      gchar *text = length > 0 ? g_strndup (g_memory_output_stream_get_data (G_MEMORY_OUTPUT_STREAM (stream)), length) : g_strdup ("");
+      g_assert_null (strstr (text, "scrollback-first"));
+      g_assert_null (strstr (text, "scrollback-line-000"));
+      g_assert_cmpint (strstr (text, "scrollback-last") != NULL, ==, !empty);
+      if (as_html)
+        {
+          g_assert_nonnull (strstr (text, "<pre>"));
+          g_assert_true (g_str_has_suffix (text, "</body></html>\n"));
+        }
+      g_free (text);
+      g_object_unref (stream);
+      vte_terminal_reset (fixture->terminal, TRUE, TRUE);
+      settle ();
+    }
+}
+
+static void
+save_scrollback_stream_failure (Fixture *fixture, gconstpointer data)
+{
+  TerminalScreen *screen = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
+  GOutputStream *stream = g_memory_output_stream_new_resizable ();
+  GError *error = NULL;
+  g_assert_true (g_output_stream_close (stream, NULL, NULL));
+  g_assert_false (terminal_screen_save_scrollback (screen, stream, GPOINTER_TO_INT (data), &error));
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_CLOSED);
+  g_clear_error (&error);
+  g_object_unref (stream);
+}
 
 static void
 copy_application_selection (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
@@ -1011,6 +1196,22 @@ main (int argc, char **argv)
               setup_window, copy_all_scrollback, teardown);
   g_test_add ("/terminal/copy/all-scrollback-html", Fixture, GINT_TO_POINTER (TRUE),
               setup_window, copy_all_scrollback, teardown);
+  g_test_add ("/terminal/save/all-scrollback-text", Fixture, NULL,
+              setup_window, save_all_scrollback, teardown);
+  g_test_add ("/terminal/save/all-scrollback-html", Fixture, GINT_TO_POINTER (1),
+              setup_window, save_all_scrollback, teardown);
+  g_test_add ("/terminal/save/cancel-text", Fixture, GINT_TO_POINTER (2),
+              setup_window, save_all_scrollback, teardown);
+  g_test_add ("/terminal/save/cancel-html", Fixture, GINT_TO_POINTER (3),
+              setup_window, save_all_scrollback, teardown);
+  g_test_add ("/terminal/save/write-error-text", Fixture, NULL,
+              setup_window, save_scrollback_stream_failure, teardown);
+  g_test_add ("/terminal/save/write-error-html", Fixture, GINT_TO_POINTER (TRUE),
+              setup_window, save_scrollback_stream_failure, teardown);
+  g_test_add ("/terminal/save/empty-and-truncated-text", Fixture, NULL,
+              setup_window, save_scrollback_empty_and_truncated, teardown);
+  g_test_add ("/terminal/save/empty-and-truncated-html", Fixture, GINT_TO_POINTER (TRUE),
+              setup_window, save_scrollback_empty_and_truncated, teardown);
   g_test_add ("/terminal/copy/application-selection", Fixture, GINT_TO_POINTER (1),
               setup_window, copy_application_selection, teardown);
   g_test_add ("/terminal/copy/no-selection-interrupt", Fixture, NULL,

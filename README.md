@@ -429,6 +429,20 @@ terminal scrollback. HTML preserves colours and formatting; plain-text
 destinations receive HTML source, as with Copy as HTML. These actions copy the
 terminal's own buffer, not tmux's separate history.
 
+**Save All Scrollback...** and **Save All Scrollback as HTML...** follow those
+copy actions in both menus, with save icons, replacing **Save Contents...**.
+They open a save dialog in the tab's working directory with default names
+`scrollback.txt` and `scrollback.html`. Text exports contain plain UTF-8 text;
+HTML exports are standalone UTF-8 documents preserving colours, bold text and
+escaped markup. Both export the active tab's visible screen and retained history,
+not tmux's separate buffer. The exporter does not use or replace the clipboard,
+send input to the child or change scroll position. Cancellation leaves files
+untouched, overwriting requires confirmation, and write/close errors are reported.
+Full-buffer HTML export uses a read-only hook in the bundled private VTE so
+discarded history and relative/pixel scrollbar coordinates cannot truncate the
+export. Builds explicitly configured with `-Dpatched-vte=false` retain text saving
+but disable this HTML save action; the system VTE installation is never changed.
+
 `test-terminal-copy` exercises the actual window accelerator and PTY, including
 application highlighting, native selection precedence, full-scrollback exports,
 menu ordering and icons, and an isolated tmux server. Run GUI tests under Xvfb,
