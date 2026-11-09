@@ -1,6 +1,7 @@
 """Isolated transaction tests: no desktop session or user window is touched."""
 
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,13 +10,17 @@ import select
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "terminal/update"
 sys.path.insert(0, str(SOURCE))
 import core
 import processes
+SPEC = importlib.util.spec_from_file_location("terminal_mechanics", SOURCE / "terminal-update-helper.py")
+mechanics = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(mechanics)
 
 
 def window():
@@ -142,6 +147,8 @@ class GateTests(unittest.TestCase):
             with self.subTest(environment=str(environment)[:40]), self.assertRaises(processes.UpdateError):
                 core.validate_environment(environment)
 
+
+
     def test_real_child_cannot_execute_until_release(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "executed"
@@ -190,15 +197,35 @@ class GateTests(unittest.TestCase):
                     child.terminate()
                 child.communicate(timeout=3)
 
-    def test_tmux_attaches_immediately_and_is_not_blocked_by_a_startup_gate(self):
+    def test_generic_staging_gates_every_command_without_interpreting_tmux(self):
         with tempfile.TemporaryDirectory() as directory:
             command = ["/usr/bin/tmux", "-N", "-S", "/tmp/private", "attach-session", "-t", "$6"]
-            tabs = [dict(argv=command, tmux={"session": "$6"})]
+            tabs = [dict(argv=command, tmux={"session": "$6"}, title="tmux owns this title")]
             gates = core.StartupGates(directory, tabs)
-            self.assertEqual(gates.commands(tabs, "unused"), [command])
-            self.assertTrue(gates.ready([dict(child_pid=123)]))
-            gates.release()
+            prepared = gates.commands(tabs, "unused")[0]
+            self.assertEqual(prepared[-len(command):], command)
+            self.assertIn("--gate", prepared)
+            self.assertFalse(gates.ready([dict(child_pid=0)]))
             gates.close()
+
+
+class ObserverTests(unittest.TestCase):
+    def test_worker_exit_after_final_publish_cannot_turn_success_into_failure(self):
+        for phase in ("complete", "failed", "running"):
+            with self.subTest(phase=phase):
+                backend = mechanics.Backend.__new__(mechanics.Backend)
+                backend.operations = threading.Lock()
+                backend.status = dict(phase=phase, backup="/private/retained-plan")
+                backend.replacement = Mock(closed=False)
+                backend.publish = Mock()
+                backend.coordinator_lost()
+                if phase == "running":
+                    backend.replacement.recover.assert_called_once()
+                    self.assertEqual(backend.publish.call_args.args[0]["phase"], "failed")
+                    self.assertEqual(backend.publish.call_args.args[0]["backup"], "/private/retained-plan")
+                else:
+                    backend.replacement.recover.assert_not_called()
+                    backend.publish.assert_not_called()
 
 
 class Backend:
@@ -253,16 +280,15 @@ class Backend:
         if self.fault == "finish":
             raise processes.UpdateError("Could not finish replacement startup")
 
+    def call(self, *arguments):
+        return ["<method name='HoldForUpdate'/>"]
 
-class TransactionTests(unittest.TestCase):
-    def test_node_wrapper_resolves_to_the_unique_native_codex_child(self):
-        root = dict(pid=111, group=111, tty=1, exe="/usr/bin/node", argv=["node", "/bin/codex"])
-        native = dict(pid=222, group=111, tty=1, exe="/tmp/codex", argv=["codex"])
-        with patch.object(processes, "identity", side_effect=lambda pid: root if pid == 111 else native), \
-             patch.object(processes, "children", side_effect=lambda pid: [222] if pid == 111 else []):
-            self.assertEqual(processes.foreground(dict(child_pid=111, foreground_pgid=111)), native)
+    def hold_original(self, enabled):
+        self.events.append("hold" if enabled else "unhold")
 
-    def run_job(self, fault=None):
+
+class ReplacementTests(unittest.TestCase):
+    def run_staging(self, fault=None):
         backend = Backend()
         backend.fault = fault
         with tempfile.TemporaryDirectory() as directory:
@@ -271,9 +297,7 @@ class TransactionTests(unittest.TestCase):
             binary.chmod(0o700)
             request = dict(owner_pid=123, owner_bus="old", window_uuid="window", window_title="Terminal",
                            executable=str(binary), launch_path=str(binary), launch_kind="executable", job_id="job", service="job-service")
-            process = dict(pid=111, start=1, exe="/bin/bash", argv=["bash"], group=111)
-            tab = dict(argv=["/bin/bash", "-l"], cwd="/tmp", active=True, record=backend.record,
-                       process=process, kind="bash")
+            tab = dict(argv=["/bin/true"], cwd="/tmp", active=True, title="literal %D")
             ticks = iter(range(1, 1000))
             class Gates:
                 def __init__(self, *arguments): pass
@@ -285,31 +309,47 @@ class TransactionTests(unittest.TestCase):
                 pid = 222
                 returncode = 1
                 def poll(self): return 1 if fault == "exit" else None
-            job = core.UpdateJob(request, backend, str(SOURCE / "terminal-update-helper.py"))
+                def terminate(self): backend.events.append("discard-replacement")
+            job = core.Replacement(request, backend, str(SOURCE / "terminal-update-helper.py"))
             with patch.object(core, "identity", return_value=dict(pid=123, start=1, exe="old")), \
                  patch.object(core, "digest", side_effect=lambda path: "old" if str(path).startswith("/proc/") else "new"), \
-                 patch.object(core, "capture_tab", return_value=tab), \
                  patch.object(core, "verify_binary"), \
                  patch.object(core, "alive", side_effect=lambda saved: not backend.closed), \
                  patch.object(core, "StartupGates", Gates), \
                  patch.object(core.subprocess, "Popen", return_value=Child()), \
                  patch.object(core.time, "sleep"), patch.object(core.time, "monotonic", side_effect=lambda: next(ticks)), \
                  patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(directory) / "state"), "XDG_RUNTIME_DIR": directory}):
-                job.run()
+                try:
+                    job.capture()
+                    job.stage(dict(tabs=[tab]))
+                    self.assertNotIn("close-original", backend.events)
+                    job.release()
+                    backend.events.append("application-verified-by-coordinator")
+                    job.commit()
+                    backend.status = dict(phase="complete")
+                except processes.UpdateError as error:
+                    backend.status = dict(phase="failed", message=str(error), original_closed=job.closed)
+                    try:
+                        job.recover()
+                    except processes.UpdateError:
+                        backend.events.append("recovery-error-retained")
+                finally:
+                    job.cleanup()
         return backend
 
-    def test_prepare_verify_close_exit_then_release_and_present(self):
-        backend = self.run_job()
+    def test_staging_never_closes_original_until_coordinator_releases_and_commits(self):
+        backend = self.run_staging()
         self.assertEqual(backend.status["phase"], "complete", backend.status)
         events = backend.events
         self.assertLess(events.index("gates-ready"), events.index("close-original"))
-        self.assertLess(events.index("close-original"), events.index("release-programs"))
+        self.assertLess(events.index("release-programs"), events.index("close-original"))
+        self.assertLess(events.index("application-verified-by-coordinator"), events.index("close-original"))
         self.assertLess(events.index("release-programs"), events.index("present"))
 
     def test_preparation_and_placement_failures_never_close_original(self):
-        for fault in ("cancel", "monitor", "geometry", "exit"):
+        for fault in ("monitor", "geometry", "exit"):
             with self.subTest(fault=fault):
-                backend = self.run_job(fault)
+                backend = self.run_staging(fault)
                 self.assertEqual(backend.status["phase"], "failed", backend.status)
                 self.assertNotIn("close-original", backend.events)
                 self.assertNotIn("release-programs", backend.events)
@@ -325,12 +365,11 @@ class TransactionTests(unittest.TestCase):
             changed = {**record, key: value}
             self.assertFalse(processes.same_tabs([record], [changed]), key)
 
-    def test_failed_handoff_after_close_is_not_reported_as_success_or_released(self):
-        backend = self.run_job("finish")
+    def test_failed_native_finish_keeps_the_original_window(self):
+        backend = self.run_staging("finish")
         self.assertEqual(backend.status["phase"], "failed")
-        self.assertTrue(backend.status["original_closed"])
-        self.assertIsNotNone(backend.status["backup"])
-        self.assertNotIn("release-programs", backend.events)
+        self.assertFalse(backend.status["original_closed"])
+        self.assertNotIn("close-original", backend.events)
 
 
 if __name__ == "__main__":

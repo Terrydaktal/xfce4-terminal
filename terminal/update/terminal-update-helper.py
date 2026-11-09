@@ -4,13 +4,14 @@
 import json
 import os
 from pathlib import Path
+import secrets
 import sys
 import tempfile
 import threading
 import time
 import uuid
 
-from core import UpdateJob, gate
+from core import Replacement, gate
 from processes import UpdateError, identity
 
 PATH = "/org/xfce/Terminal/Update"
@@ -22,6 +23,7 @@ XML = """<node><interface name='org.xfce.Terminal.Update1'>
 <method name='Confirm'><arg type='b' direction='in'/><arg type='s' direction='out'/></method>
 <method name='Cancel'><arg type='s' direction='out'/></method>
 <method name='KWinResult'><arg type='s' direction='in'/><arg type='s' direction='in'/></method>
+<method name='Operate'><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='out'/></method>
 </interface></node>"""
 
 
@@ -47,6 +49,10 @@ class Backend:
         self.confirmed = threading.Event()
         self.cancelled = threading.Event()
         self.pending = {}
+        self.token = secrets.token_hex(32)
+        self.coordinator_owner = None
+        self.operations = threading.Lock()
+        self.replacement = Replacement(request, self, __file__)
         self.status = {"phase": "preparing", "operation_id": request["job_id"],
                        "window_uuid": request["window_uuid"], "owner_pid": request["owner_pid"]}
         self.directory = tempfile.TemporaryDirectory(prefix="xfce-update-kwin-", dir=os.environ.get("XDG_RUNTIME_DIR"))
@@ -84,6 +90,24 @@ class Backend:
                         pending[0].set()
                 invocation.return_value(None)
                 return
+            if method == "Operate":
+                token, action, payload = values
+                if (not secrets.compare_digest(token, self.token) or len(payload) > 2 * 1024 * 1024
+                        or (self.coordinator_owner is not None and sender != self.coordinator_owner)):
+                    raise UpdateError("Untrusted lifecycle operation")
+                if self.dbus("GetConnectionUnixUser", "(s)", [sender])[0] != os.getuid():
+                    raise UpdateError("The lifecycle worker belongs to another user")
+                self.coordinator_owner = sender
+                def execute():
+                    try:
+                        with self.operations:
+                            result = self.operate(action, json.loads(payload))
+                        reply = dict(ok=result)
+                    except Exception as error:
+                        reply = dict(error=str(error))
+                    invocation.return_value(self.GLib.Variant("(s)", (json.dumps(reply),)))
+                threading.Thread(target=execute, name="terminal-staging-operation", daemon=True).start()
+                return
             if method != "GetStatus" and sender != self.request["owner_bus"]:
                 raise UpdateError("Only the requesting terminal can confirm or cancel this update")
             if method == "Confirm":
@@ -94,7 +118,7 @@ class Backend:
                 else:
                     self.cancelled.set()
             elif method == "Cancel":
-                if self.status["phase"] not in ("closing", "complete"):
+                if self.status["phase"] in ("preparing", "ready"):
                     self.cancelled.set()
             elif method != "GetStatus":
                 raise UpdateError("Unknown update method")
@@ -103,6 +127,27 @@ class Backend:
             invocation.return_value(self.GLib.Variant("(s)", (payload,)))
         except Exception as error:
             invocation.return_dbus_error("org.xfce.Terminal.Update1.Refused", str(error))
+
+    def operate(self, action, value):
+        if action == "Publish":
+            if value.get("phase") not in ("preparing", "ready", "running", "closing", "complete", "failed"):
+                raise UpdateError("Unknown lifecycle phase")
+            self.publish(value)
+            return {}
+        if action == "AwaitConfirmation":
+            self.wait_for_confirmation(300)
+            return {}
+        if action == "Capture": return self.replacement.capture()
+        if action == "Preflight": return self.replacement.preflight()
+        if action == "Stage": return self.replacement.stage(value)
+        if action == "Hold":
+            self.hold_original(True)
+            return {}
+        if action == "Release": return self.replacement.release()
+        if action == "Records": return self.replacement.records()
+        if action == "Commit": return self.replacement.commit()
+        if action in ("Discard", "Recover"): return self.replacement.recover()
+        raise UpdateError("Unknown generic terminal operation")
 
     def publish(self, status):
         with self.lock:
@@ -118,6 +163,19 @@ class Backend:
             print(f"Could not persist terminal update status: {error}", file=sys.stderr, flush=True)
         if status["phase"] == "failed":
             print(payload, file=sys.stderr, flush=True)
+
+    def coordinator_lost(self):
+        # Publish/Commit may have finished while the observer was sleeping or
+        # checking the bus owner. Never overwrite a final outcome after success.
+        with self.operations:
+            if self.status["phase"] in ("complete", "failed"):
+                return
+            try:
+                self.replacement.recover()
+            except Exception:
+                pass
+            self.publish(dict(self.status, phase="failed", original_closed=self.replacement.closed,
+                message="The lifecycle worker stopped. The original window and recovery records were retained when possible; no automatic restart was attempted."))
 
     def save_status(self, payload):
         directory = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "xfce4-terminal/updates"
@@ -205,6 +263,10 @@ class Backend:
         self.call(self.request["owner_bus"], TERMINAL_PATH, TERMINAL_INTERFACE, "CloseForUpdate",
                   "(ss)", [window_uuid, self.request["service"]])
 
+    def hold_original(self, enabled):
+        self.call(self.request["owner_bus"], TERMINAL_PATH, TERMINAL_INTERFACE, "HoldForUpdate",
+                  "(ssb)", [self.request["window_uuid"], self.request["service"], enabled])
+
     def finish_replacement(self, owner):
         self.call(owner, TERMINAL_PATH, TERMINAL_INTERFACE, "FinishUpdate",
                   "(s)", [self.request["service"]])
@@ -222,11 +284,34 @@ def serve(request):
     identity(request["owner_pid"])
     backend = Backend(request)
     loop = backend.GLib.MainLoop()
-    job = UpdateJob(request, backend, __file__)
     backend.connection.connect("closed", lambda *arguments: (backend.cancelled.set(), loop.quit()))
 
     def work():
-        job.run()
+        try:
+            value = dict(request, protocol=1, token=backend.token)
+            job_id = backend.call("com.terrydaktal.ApplicationLauncher", "/Lifecycle",
+                "com.terrydaktal.ApplicationLauncher.Lifecycle1", "BeginWindowUpdate", "(s)",
+                [json.dumps(value)], timeout=12000)[0]
+        except Exception as error:
+            backend.publish(dict(phase="failed", original_closed=False,
+                message=f"Lifecycle backend unavailable: {error}. Start or update applicationlauncherd; no original window was closed."))
+            return
+        while backend.status["phase"] not in ("failed", "complete"):
+            time.sleep(0.2)
+            if backend.status["phase"] in ("failed", "complete"):
+                break
+            if backend.coordinator_owner is None:
+                try:
+                    report = json.loads(backend.call("com.terrydaktal.ApplicationLauncher", "/Lifecycle",
+                        "com.terrydaktal.ApplicationLauncher.Lifecycle1", "GetWindowUpdateReport", "(s)", [job_id])[0])
+                    if report.get("phase") == "failed":
+                        backend.publish(dict(report, original_closed=False))
+                        break
+                except Exception:
+                    pass
+            if backend.coordinator_owner is not None and not backend.dbus("NameHasOwner", "(s)", [backend.coordinator_owner])[0]:
+                backend.coordinator_lost()
+                break
         if backend.status["phase"] == "failed" and backend.status.get("original_closed"):
             def show_failure():
                 import gi
@@ -249,6 +334,7 @@ def serve(request):
 
     threading.Thread(target=work, name="terminal-update", daemon=True).start()
     loop.run()
+    backend.replacement.cleanup()
     backend.directory.cleanup()
 
 

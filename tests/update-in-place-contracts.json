@@ -1,14 +1,15 @@
 {
   "schema_version": 1,
-  "scope": "Terminal-owned Update in Place and optional launcher request adapter",
+  "scope": "Native terminal mechanics with shared daemon-owned lifecycle policy and durable supervised coordination",
   "artifacts": [
     "Meson debugoptimized xfce4-terminal",
-    "Bundled Python/Gio update helper"
+    "Bundled Python/Gio mechanics helper",
+    "applicationlauncherd release lifecycle backend"
   ],
   "contracts": [
     {
       "id": "UPDATE-01",
-      "behavior": "The real context menu is disabled without a different usable binary",
+      "behavior": "The Update in Place context-menu item always remains visible, is greyed out without a different usable binary and becomes enabled when one is detected, including availability changes while the menu is open",
       "tests": [
         "/terminal/update/context-menu",
         "/terminal/update/no-new-build",
@@ -17,20 +18,24 @@
     },
     {
       "id": "UPDATE-02",
-      "behavior": "No Application Launcher service is required; tmux reattaches to the exact live session before closing the old client",
+      "behavior": "The lifecycle coordinator uses the shared application adapters; tmux reattaches to the exact live server/session without stopping its server or applications before the original window closes",
       "tests": [
         "/terminal/update/tmux-preserves-programs",
-        "test_tmux_attaches_immediately_and_is_not_blocked_by_a_startup_gate"
+        "test_generic_staging_gates_every_command_without_interpreting_tmux",
+        "test_tmux_reattachment_does_not_require_stopping_a_server_or_pane",
+        "terminal-update-wayland"
       ]
     },
     {
       "id": "UPDATE-03",
-      "behavior": "Non-tmux restarts require local confirmation and startup cannot execute until the original application exits",
+      "behavior": "Non-tmux restarts require explicit consent, collected either by the native menu or the launcher without a second modal; the original window stays held until replacement application verification and final commit",
       "tests": [
         "/terminal/update/cancel-non-tmux",
         "/terminal/update/confirm-non-tmux",
         "test_real_child_cannot_execute_until_release",
-        "test_prepare_verify_close_exit_then_release_and_present"
+        "test_staging_never_closes_original_until_coordinator_releases_and_commits",
+        "test_shared_coordinator_verifies_before_closing_the_original_window",
+        "terminal-update-wayland-confirmed-daemon-restart"
       ]
     },
     {
@@ -66,21 +71,54 @@
     },
     {
       "id": "UPDATE-07",
-      "behavior": "Real tmux and confirmed two-tab shell updates complete under isolated software-rendered KWin, with no Application Launcher bus service, the same offscreen placement, active tab and working directories",
+      "behavior": "Real tmux, confirmed two-tab shell and Codex updates use a private instance of the release lifecycle daemon under software-rendered KWin, preserving offscreen placement, active tab, directories and exact conversations; confirmed work survives daemon termination and its result is recovered after restart. After resumed Codex exits normally, the same replacement window and tab remain alive with idle Fish, including compatibility/no-tab-API updates",
       "tests": [
         "terminal-update-wayland",
-        "terminal-update-wayland-shell"
+        "terminal-update-wayland-shell",
+        "terminal-update-wayland-codex",
+        "terminal-update-wayland-confirmed-daemon-restart",
+        "test_worker_exit_after_final_publish_cannot_turn_success_into_failure"
+      ]
+    },
+    {
+      "id": "UPDATE-10",
+      "behavior": "The terminal menu and enhanced native clients use one mechanics helper and one shared daemon-owned application policy. Missing or old lifecycle support refuses before application shutdown. For older running terminals without update/hold APIs, the daemon supplies external CLI/KWin mechanics with the same coordinator, optionally using ListTerminals; no tab API requires exactly one window and controlling PTY. There is no duplicate Codex/session detector in the terminal helper",
+      "tests": [
+        "/terminal/update/context-menu",
+        "/terminal/update/context-menu-with-launcher",
+        "terminal-update-wayland",
+        "terminal-update-wayland-shell",
+        "test_terminal_source_contains_no_application_detection_or_resume_policy",
+        "test_old_terminals_without_native_hold_are_refused_before_staging_non_tmux_apps",
+        "test_daemon_owned_compatibility_update_needs_no_native_hold",
+        "terminal-update-wayland-external-tmux",
+        "terminal-update-wayland-external-tmux-shell",
+        "terminal-update-wayland-external-shell",
+        "terminal-update-wayland-external-codex",
+        "terminal-update-wayland-external-without-tab-api"
+      ]
+    },
+    {
+      "id": "UPDATE-11",
+      "behavior": "Window-only updates preserve the running native application image, including deleted builds, and retain durable private recovery executables; individual program updates may choose the latest installed image. Allowlisted colour and locale values, including absent overrides, survive startup without persisting arbitrary secrets",
+      "tests": [
+        "test_window_planning_uses_the_shared_adapter_and_pins_the_running_build",
+        "test_terminal_environment_preserves_only_allowlisted_values_and_absence",
+        "test_environment_values_and_absence_survive_the_generic_startup_gate",
+        "test_pinned_execution_path_is_distinct_from_the_preserved_argv_zero",
+        "test_malformed_generic_environment_is_rejected_before_execution",
+        "terminal-update-wayland-codex"
       ]
     }
   ],
   "test_owners": {
     "client_and_menu": "tests/test-terminal-update.c and tests/test-terminal-copy.c",
-    "backend": "tests/test-terminal-update-helper.py",
-    "placement": "terminal/update/kwin.js"
+    "backend": "tests/test-terminal-update-helper.py and applicationlauncher/tests/test_lifecycle_windows.py, tests/test_lifecycle_external.py",
+    "placement": "terminal/update/kwin.js and applicationlauncher/src/lifecycle/placement.js"
   },
   "environments": {
-    "automated_gui": "Private HOME/XDG, session bus and Xvfb; mock worker, no tracker",
+    "automated_gui": "Private HOME/XDG, session bus and Xvfb; mock worker and optional launcher-call canary, no real tracker",
     "automated_backend": "Temporary files, fake KWin backend and real private child startup sockets",
-    "native_wayland": "Automated disposable tmux and confirmed two-tab shell updates under private-bus, private-HOME, software-rendered KWin; real user windows are never replaced"
+    "native_wayland": "Disposable tmux, shell, monitor and Codex fixtures under private bus/HOME/XDG, real release applicationlauncherd and software KWin. A test-only supervisor detaches jobs independently of the daemon. Set XFCE_LIFECYCLE_DAEMON and optionally XFCE_LIFECYCLE_CODEX_FIXTURE to the separate checkout's artifacts. No real user windows are replaced"
   }
 }

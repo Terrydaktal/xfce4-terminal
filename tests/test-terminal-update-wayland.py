@@ -1,6 +1,7 @@
 """Real terminal/tmux handoff under an isolated, software-rendered KWin."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -45,6 +47,11 @@ def run_session(binary):
     compositor = subprocess.Popen(["kwin_wayland", "--virtual", "--width", "1280", "--height", "800",
         "--no-lockscreen", "--no-global-shortcuts", "--no-kactivities", "--socket", "xfce-update-test"],
         stdout=log, stderr=log)
+    daemon_log = open(root / "lifecycle-daemon.log", "wb")
+    daemon_binary = os.environ.get("XFCE_LIFECYCLE_DAEMON") or shutil.which("applicationlauncherd")
+    if not daemon_binary:
+        raise RuntimeError("The shared lifecycle integration requires applicationlauncherd")
+    daemon = subprocess.Popen([daemon_binary], stdout=daemon_log, stderr=daemon_log)
     original = None
     replacement = helper_pid = None
     socket_path = str(root / "tmux.socket")
@@ -53,7 +60,7 @@ def run_session(binary):
     loop = GLib.MainLoop()
 
     def test():
-        nonlocal original, replacement, helper_pid, backend
+        nonlocal original, replacement, helper_pid, backend, daemon
         try:
             connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
             def kwin_ready():
@@ -67,7 +74,21 @@ def run_session(binary):
             backend = worker.Backend(dict(owner_bus=connection.get_unique_name(), owner_pid=os.getpid(),
                 window_uuid=str(uuid.uuid4()), job_id=request_id,
                 service="org.xfce.Terminal5.Update.i" + request_id.replace("-", "_")))
-            assert not backend.dbus("NameHasOwner", "(s)", ["com.terrydaktal.ApplicationLauncher"])[0]
+            def lifecycle_ready():
+                result = backend.call("com.terrydaktal.ApplicationLauncher", "/Lifecycle",
+                    "com.terrydaktal.ApplicationLauncher.Lifecycle1", "GetCapabilities")[0]
+                assert json.loads(result)["protocol"] == 1
+                return True
+            wait_for(lifecycle_ready)
+            external_mode = os.environ.get("XFCE_LIFECYCLE_TEST_EXTERNAL") == "1"
+            if external_mode:
+                lifecycle_source = Path(daemon_binary).resolve().parents[2] / "src/lifecycle"
+                for module_name, filename in (("lifecycle_worker", "worker.py"), ("lifecycle_window", "window.py"), ("lifecycle_external", "external.py")):
+                    spec = importlib.util.spec_from_file_location(module_name, lifecycle_source / filename)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_name] = module
+                    spec.loader.exec_module(module)
+                external = sys.modules["lifecycle_external"]
             subprocess.run(["tmux", "-S", socket_path, "-f", "/dev/null", "new-session", "-d", "-s", "fixture",
                             "/bin/sleep 180"], check=True, timeout=5)
             pane = subprocess.check_output(["tmux", "-S", socket_path, "display-message", "-p", "-t", "fixture",
@@ -75,31 +96,71 @@ def run_session(binary):
             # A private copy with a changed ELF note represents the old running build.
             old = root / "old/xfce4-terminal"
             old.parent.mkdir()
-            shutil.copyfile(binary, old)
+            shutil.copyfile(os.environ.get("XFCE_LIFECYCLE_TEST_LEGACY_BINARY", str(binary)), old)
             note = subprocess.check_output(["readelf", "-n", str(old)], timeout=3).decode()
             build_id = bytes.fromhex(re.search(r"Build ID: ([0-9a-f]+)", note).group(1))
             contents = bytearray(old.read_bytes())
             contents[contents.index(build_id)] ^= 1
+            if external_mode and "XFCE_LIFECYCLE_TEST_LEGACY_BINARY" not in os.environ:
+                contents = contents.replace(b"GetUpdateStatus", b"OldUpdateStatus")
+            if os.environ.get("XFCE_LIFECYCLE_TEST_NO_TAB_API") == "1":
+                contents = contents.replace(b"ListTerminals", b"LostTerminals")
             old.write_bytes(contents)
             old.chmod(0o700)
             environment = os.environ.copy()
             environment["XFCE4_TERMINAL_LAUNCH_PATH"] = str(binary)
             environment["XFCE4_TERMINAL_LAUNCH_KIND"] = "executable"
             shell_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "shell"
+            codex_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "codex"
+            multiple_tabs = shell_mode
             command = shlex.join([shutil.which("bash"), "--noprofile", "--norc"] if shell_mode else
                                  [shutil.which("tmux"), "-N", "-S", socket_path, "attach-session", "-t", "fixture"])
+            tmux_shell = os.environ.get("XFCE_LIFECYCLE_TEST_TMUX_SHELL") == "1"
+            if tmux_shell:
+                command = shlex.join([shutil.which("bash"), "--noprofile", "--norc", "-i", "-c", command + "; exec bash --noprofile --norc"])
+            codex_arguments = None
+            if codex_mode:
+                fixture = Path(os.environ.get("XFCE_LIFECYCLE_CODEX_FIXTURE", str(Path(daemon_binary).resolve().parents[2] / "tests/fixtures/application_update_codex.c")))
+                codex_binary = root / "bin/codex"
+                subprocess.run(["cc", "-O2", str(fixture), "-o", str(codex_binary)], check=True, timeout=15)
+                with codex_binary.open("rb") as stream:
+                    original_codex_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+                main_id = "12345678-1234-5678-9abc-123456789abc"
+                logs = []
+                for index in range(4):
+                    identity = main_id if index == 0 else f"abcdef0{index}-1234-5678-9abc-123456789abc"
+                    payload = dict(id=identity, source="cli")
+                    if index:
+                        payload.update(parent_thread_id=main_id, source=dict(subagent=dict(thread_spawn=dict(parent_thread_id=main_id, depth=1))))
+                    path = root / f"rollout-fixture-{index}.jsonl"
+                    path.write_text(json.dumps(dict(type="session_meta", payload=payload)) + "\n")
+                    logs.append(str(path))
+                environment["APPLICATION_UPDATE_FIXTURE_LOGS"] = ":".join(logs)
+                if os.environ.get("XFCE_LIFECYCLE_TEST_RESTART") == "1":
+                    environment["APPLICATION_UPDATE_FIXTURE_GRACEFUL_EXIT"] = "1"
+                codex_arguments = [str(codex_binary), "resume", main_id, "--model", "fixture-model", "--profile", "fixture-profile",
+                                   "--config", 'approval_policy="never"', "--dangerously-bypass-approvals-and-sandbox"]
+                command = shlex.join(codex_arguments)
             with open(root / "original.log", "wb") as terminal_log:
                 arguments = [str(old), "--disable-server", "--working-directory", str(root), "--command", command]
-                if shell_mode:
+                if multiple_tabs:
                     (root / "second-tab").mkdir()
                     arguments.extend(["--tab", "--working-directory", str(root / "second-tab"),
                                       "--active-tab", "--command", command])
                 original = subprocess.Popen(arguments, env=environment, stdout=terminal_log, stderr=terminal_log)
             owner = wait_for(lambda: backend.terminal_owner(original.pid))
+            def original_records():
+                try: return backend.records(owner)
+                except Exception:
+                    if not external_mode: raise
+                    return [external.proc_record(original.pid, "original")]
             def capture():
-                records = backend.records(owner)
-                if len(records) != (2 if shell_mode else 1) or any(row["foreground_pgid"] <= 1 for row in records):
+                records = original_records()
+                if len(records) != (2 if multiple_tabs else 1) or any(row["foreground_pgid"] <= 1 for row in records):
                     raise RuntimeError("Original tmux tab is not ready: " + json.dumps(records))
+                if tmux_shell:
+                    _, active = external.worker.foreground(records[0]["child_pid"], records[0]["foreground_pgid"])
+                    assert external.worker.kind(active) == "tmux", "The shell has not started its tmux client"
                 return backend.kwin("capture", pid=original.pid)
             saved = wait_for(capture)
             # Reproduce the reported five-pixel offscreen bottom edge in the private display.
@@ -111,45 +172,146 @@ def run_session(binary):
             time.sleep(0.2)
             captured = backend.kwin("capture", pid=original.pid, id=saved["id"])
             placement_matches(saved, captured, saved["minimized"])
-            window_uuid = backend.records(owner)[0]["window_uuid"]
+            window_uuid = original_records()[0]["window_uuid"]
+            if codex_mode:
+                original_codex_pid = original_records()[0]["child_pid"]
+                newer = root / "bin/newer-codex"
+                shutil.copyfile(codex_binary, newer)
+                note = subprocess.check_output(["readelf", "-n", str(newer)], timeout=3).decode()
+                build_id = bytes.fromhex(re.search(r"Build ID: ([0-9a-f]+)", note).group(1))
+                contents = bytearray(newer.read_bytes())
+                contents[contents.index(build_id)] ^= 1
+                newer.write_bytes(contents)
+                newer.chmod(0o700)
+                newer.replace(codex_binary)
             def available():
                 status = json.loads(backend.call(owner, worker.TERMINAL_PATH, worker.TERMINAL_INTERFACE,
                     "GetUpdateStatus", "(s)", [window_uuid])[0])
                 if not status["updatable"]:
                     raise RuntimeError("Old terminal has not detected its replacement yet")
                 return status
-            wait_for(available)
-            service = backend.call(owner, worker.TERMINAL_PATH, worker.TERMINAL_INTERFACE,
-                "UpdateInPlace", "(s)", [window_uuid])[0]
-            def status():
-                return json.loads(backend.call(service, worker.PATH, worker.INTERFACE, "GetStatus")[0])
+            if not external_mode: wait_for(available)
+            already_confirmed = external_mode or os.environ.get("XFCE_LIFECYCLE_TEST_CONFIRMED") == "1"
+            if already_confirmed and not external_mode:
+                for method, signature, values in (
+                        ("UpdateInPlaceWithConsent", "(sb)", [window_uuid, False]),
+                        ("HoldForUpdate", "(ssb)", [window_uuid, "untrusted-service", True])):
+                    try:
+                        backend.call(owner, worker.TERMINAL_PATH, worker.TERMINAL_INTERFACE, method, signature, values)
+                    except GLib.Error as error:
+                        assert "consent" in str(error) or "pending update helper" in str(error), error
+                    else:
+                        raise AssertionError("Unconfirmed/foreign native update request was accepted")
+                assert not available()["pending"]
+            if external_mode:
+                tracker = ("com.terrydaktal.ApplicationLauncher", "/Tracker", "com.terrydaktal.ApplicationLauncher.Tracker1")
+                def tracker_call(method, signature="()", arguments=()):
+                    value = json.loads(backend.call(*tracker, method, signature, arguments)[0])
+                    assert "Ok" in value, value
+                    return value["Ok"]
+                payload = dict(id=saved["id"], pid=original.pid, title=saved["title"], **{"class":"xfce4-terminal"})
+                backend.call("com.terrydaktal.ApplicationLauncher", "/WindowFeed", "com.terrydaktal.ApplicationLauncher.WindowFeed",
+                             "ReplaceSnapshot", "(s)", [json.dumps([payload])])
+                operation = tracker_call("BeginTerminalUpgradePreview")
+                def ready_preview():
+                    report = tracker_call("GetTerminalUpgradeReport", "(s)", [operation])
+                    if report["phase"] == "preparing": raise RuntimeError("Waiting for compatibility preview")
+                    assert report["phase"] == "ready" and len(report["windows"]) == 1, report
+                    assert report["windows"][0]["eligible"], report
+                    return report
+                wait_for(ready_preview, seconds=35)
+                denied = json.loads(backend.call(*tracker, "StartTerminalUpgrade", "(sasb)", [operation, [saved["id"]], False])[0])
+                assert "Err" in denied and original.poll() is None, denied
+                tracker_call("StartTerminalUpgrade", "(sasb)", [operation, [saved["id"]], True])
+                def status():
+                    for path in (root / "state/applicationlauncher/lifecycle").glob("*/request.json"):
+                        request = json.loads(path.read_text())
+                        if request.get("transport") == "external" and request["external"]["window"]["id"] == saved["id"]:
+                            value = json.loads(path.with_name("status.json").read_text())
+                            return dict(value, operation_id=path.parent.name)
+                    raise RuntimeError("Waiting for independently managed compatibility worker")
+            else:
+                service = backend.call(owner, worker.TERMINAL_PATH, worker.TERMINAL_INTERFACE,
+                    "UpdateInPlaceWithConsent" if already_confirmed else "UpdateInPlace",
+                    "(sb)" if already_confirmed else "(s)", [window_uuid, True] if already_confirmed else [window_uuid])[0]
+                def status():
+                    return json.loads(backend.call(service, worker.PATH, worker.INTERFACE, "GetStatus")[0])
             last = wait_for(status)
-            helper_pid = backend.dbus("GetConnectionUnixProcessID", "(s)", [service])[0]
+            if not external_mode: helper_pid = backend.dbus("GetConnectionUnixProcessID", "(s)", [service])[0]
             deadline = time.monotonic() + 75
+            daemon_stopped = False
             while time.monotonic() < deadline:
                 last = status()
+                if (os.environ.get("XFCE_LIFECYCLE_TEST_RESTART") == "1" and not daemon_stopped
+                        and last["phase"] == "running"):
+                    daemon.terminate()
+                    daemon.wait(timeout=5)
+                    daemon_stopped = True
                 if last["phase"] in ("failed", "complete"):
                     break
                 time.sleep(0.1)
             if last["phase"] != "complete":
                 raise AssertionError(json.dumps(last))
             replacement = last["replacement_pid"]
+            if os.environ.get("XFCE_LIFECYCLE_TEST_RESTART") == "1":
+                assert daemon_stopped, "The coordinator did not expose its running phase before completion"
+                daemon = subprocess.Popen([daemon_binary], stdout=daemon_log, stderr=daemon_log)
+                def recovered_report():
+                    report = json.loads(backend.call("com.terrydaktal.ApplicationLauncher", "/Lifecycle",
+                        "com.terrydaktal.ApplicationLauncher.Lifecycle1", "GetWindowUpdateReport", "(s)", [last["operation_id"]])[0])
+                    assert report["phase"] == "complete", report
+                    return report
+                wait_for(recovered_report)
             original.wait(timeout=5)
             actual = backend.kwin("capture", pid=replacement, id=last["replacement_window_id"])
             placement_matches(saved, actual, saved["minimized"])
             assert subprocess.check_output(["tmux", "-N", "-S", socket_path, "display-message", "-p", "-t", "fixture",
                                             "#{pane_pid}"], timeout=3).decode().strip() == pane
+            if not (shell_mode or codex_mode):
+                assert len(subprocess.check_output(["tmux", "-N", "-S", socket_path, "list-clients", "-F", "#{client_pid}"], timeout=3).splitlines()) == 1
             replacement_records = backend.records(backend.terminal_owner(replacement))
-            assert len(replacement_records) == (2 if shell_mode else 1)
-            if shell_mode:
-                assert (root / "confirmed").read_text() == "confirmed\n"
+            assert len(replacement_records) == (2 if multiple_tabs else 1)
+            if multiple_tabs:
+                if external_mode: assert not (root / "confirmed").exists(), "A second terminal confirmation was shown"
+                else: assert (root / "confirmed").read_text() == "confirmed\n"
                 assert [row["active"] for row in replacement_records] == [False, True]
                 assert [os.path.realpath(row["working_directory"]) for row in replacement_records] == [str(root), str(root / "second-tab")]
-            print(json.dumps(dict(result="passed", mode="shell" if shell_mode else "tmux", old_pid=original.pid, replacement_pid=replacement,
+            if codex_mode:
+                root_pid = replacement_records[0]["child_pid"]
+                candidates = [root_pid, *map(int, Path(f"/proc/{root_pid}/task/{root_pid}/children").read_text().split())]
+                matches = [candidate for candidate in candidates
+                    if [os.fsdecode(arg) for arg in Path(f"/proc/{candidate}/cmdline").read_bytes().split(b"\0") if arg] == codex_arguments]
+                assert len(matches) == 1, "The exact Codex argv was not preserved under the terminal shell"
+                pid = matches[0]
+                assert pid != original_codex_pid
+                arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+                assert [os.fsdecode(arg) for arg in arguments[1:] if arg] == codex_arguments[1:]
+                with open(f"/proc/{pid}/exe", "rb") as stream:
+                    assert hashlib.file_digest(stream, "sha256").hexdigest() == original_codex_hash
+                with codex_binary.open("rb") as stream:
+                    assert hashlib.file_digest(stream, "sha256").hexdigest() != original_codex_hash
+                assert os.path.realpath(f"/proc/{pid}/cwd") == str(root)
+                if already_confirmed: assert not (root / "confirmed").exists(), "A second confirmation was shown"
+                else: assert (root / "confirmed").read_text() == "confirmed\n"
+                # This private fixture returns zero for SIGUSR1: model /exit,
+                # then verify the *same* tab/window remains as an idle shell.
+                os.kill(pid, signal.SIGUSR1)
+                def returned_to_fish():
+                    records = backend.records(backend.terminal_owner(replacement))
+                    assert len(records) == 1 and records[0]["child_pid"] == root_pid
+                    executable = Path(os.readlink(f"/proc/{root_pid}/exe").removesuffix(" (deleted)"))
+                    assert executable.name == "fish", "Codex quit without leaving Fish in the updated terminal"
+                    assert not Path(f"/proc/{root_pid}/task/{root_pid}/children").read_text().strip(), "Fish has not reached its idle prompt"
+                    assert os.path.realpath(f"/proc/{root_pid}/cwd") == str(root)
+                    return records
+                wait_for(returned_to_fish)
+                placement_matches(saved, backend.kwin("capture", pid=replacement, id=actual["id"]), saved["minimized"])
+            print(json.dumps(dict(result="passed", transport="external" if external_mode else "native", mode="codex" if codex_mode else "shell" if shell_mode else "tmux", old_pid=original.pid, replacement_pid=replacement,
                                   geometry=actual["geometry"], tmux_pane_pid=pane)), flush=True)
         except Exception as error:
             failures.append(str(error))
             print("Wayland update test failed: " + str(error), file=sys.stderr, flush=True)
+            traceback.print_exc()
         finally:
             GLib.idle_add(loop.quit)
 
@@ -169,6 +331,9 @@ def run_session(binary):
     compositor.terminate()
     compositor.wait(timeout=5)
     log.close()
+    daemon.terminate()
+    daemon.wait(timeout=5)
+    daemon_log.close()
     if backend:
         backend.directory.cleanup()
     return 1 if failures else 0
@@ -193,26 +358,58 @@ def main():
             environment[key] = str(path)
         front = root / "bin"
         front.mkdir()
+        (front / "xfce4-terminal").symlink_to(binary)
         scope = front / "systemd-run"
-        scope.write_text("#!/usr/bin/python3\nimport os,sys\na=sys.argv[sys.argv.index('--')+1:]\nos.execvp(a[0],a)\n")
+        scope.write_text("#!/usr/bin/python3\nimport os,sys,subprocess\na=sys.argv[sys.argv.index('--')+1:]\n"
+            "if '--service-type=exec' in sys.argv:\n"
+            " log=open(os.environ['XFCE_UPDATE_TEST_ROOT']+'/supervised-jobs.log','ab')\n"
+            " if os.environ.get('XFCE_LIFECYCLE_TEST_TRACE') == '1':\n"
+            "  a=['strace','-ff','-s','96','-e','trace=execve,execveat,exit_group,clone,clone3,wait4,openat,read,lseek,close','-o',os.environ['XFCE_UPDATE_TEST_ROOT']+'/worker-trace']+a\n"
+            " subprocess.Popen(a,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,close_fds=True)\n"
+            "else:\n os.execvp(a[0],a)\n")
         scope.chmod(0o700)
         environment.update(PATH=str(front) + ":" + environment["PATH"], XFCE_UPDATE_TEST_ROOT=str(root),
             QT_QPA_PLATFORM="offscreen", GDK_BACKEND="wayland", WAYLAND_DISPLAY="xfce-update-test",
             LIBGL_ALWAYS_SOFTWARE="1", KWIN_COMPOSE="Q", XDG_CURRENT_DESKTOP="KDE", NO_AT_BRIDGE="1",
             GIO_USE_VFS="local", GVFS_DISABLE_FUSE="1",
             __EGL_VENDOR_LIBRARY_FILENAMES="/usr/share/glvnd/egl_vendor.d/50_mesa.json")
-        if "--shell" in sys.argv:
+        private_vte = binary.parent.parent / "subprojects/vte-0.84.1/src"
+        if private_vte.is_dir():
+            environment["LD_LIBRARY_PATH"] = str(private_vte) + ":" + environment.get("LD_LIBRARY_PATH", "")
+        if "--shell" in sys.argv or "--codex" in sys.argv:
             module = sys.argv[sys.argv.index("--confirm-module") + 1]
-            environment.update(XFCE_UPDATE_TEST_MODE="shell", GTK3_MODULES=str(Path(module).resolve()),
+            environment.update(XFCE_UPDATE_TEST_MODE="codex" if "--codex" in sys.argv else "shell", GTK3_MODULES=str(Path(module).resolve()),
                                XFCE_UPDATE_TEST_CONFIRM_LOG=str(root / "confirmed"))
+        if "--restart-daemon" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_RESTART"] = "1"
+        if "--confirmed" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_CONFIRMED"] = "1"
+        if "--external" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_EXTERNAL"] = "1"
+        if "--legacy-binary" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_LEGACY_BINARY"] = sys.argv[sys.argv.index("--legacy-binary") + 1]
+        if "--without-tab-api" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_NO_TAB_API"] = "1"
+        if "--tmux-shell" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_TMUX_SHELL"] = "1"
+        if "--trace-worker" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_TRACE"] = "1"
         result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, "--session", str(binary)],
                                 env=environment, timeout=110)
         if result.returncode:
-            for name in ("kwin.log", "original.log"):
+            for name in ("kwin.log", "original.log", "lifecycle-daemon.log", "supervised-jobs.log"):
                 path = root / name
                 if path.exists(): print(path.read_text(errors="replace")[-5000:], file=sys.stderr)
             for path in (root / "state/xfce4-terminal/updates").glob("*.log"):
                 print(path.read_text(errors="replace")[-5000:], file=sys.stderr)
+            for path in (root / "state/applicationlauncher/lifecycle").glob("*/replacement-launch.json"):
+                print(path.read_text(errors="replace")[-5000:], file=sys.stderr)
+            if "--trace-worker" in sys.argv or "--keep-artifacts" in sys.argv:
+                evidence = Path(tempfile.mkdtemp(prefix="lifecycle-window-failure-"))
+                for path in root.glob("worker-trace*"):
+                    shutil.copyfile(path, evidence / path.name)
+                shutil.copytree(root / "state/applicationlauncher/lifecycle", evidence / "lifecycle")
+                print("Retained private failure artifacts: " + str(evidence), file=sys.stderr)
         return result.returncode
 
 

@@ -16,10 +16,18 @@ terminal_update_get_service (GtkWindow *window);
 gboolean
 terminal_update_authorize_close (GtkWindow *window, const gchar *service, const gchar *sender);
 
+gboolean
+terminal_update_hold (GtkWindow *window, const gchar *service, const gchar *sender, gboolean hold);
+
 void
 terminal_update_in_place (GtkWindow *window,
                           const gchar *window_uuid,
                           TerminalBuildMonitor *monitor);
+
+void
+terminal_update_in_place_confirmed (GtkWindow *window,
+                                    const gchar *window_uuid,
+                                    TerminalBuildMonitor *monitor);
 
 G_END_DECLS
 

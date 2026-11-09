@@ -58,8 +58,11 @@ static const gchar terminal_gdbus_introspection_xml[] =
         "<arg type='s' name='status-json' direction='out'/></method>"
       "<method name='UpdateInPlace'><arg type='s' name='window-uuid' direction='in'/>"
         "<arg type='s' name='update-service' direction='out'/></method>"
+      "<method name='UpdateInPlaceWithConsent'><arg type='s' direction='in'/><arg type='b' direction='in'/>"
+        "<arg type='s' direction='out'/></method>"
       "<method name='CloseForUpdate'><arg type='s' name='window-uuid' direction='in'/>"
         "<arg type='s' name='update-service' direction='in'/></method>"
+      "<method name='HoldForUpdate'><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='b' direction='in'/></method>"
       "<method name='FinishUpdate'><arg type='s' name='update-service' direction='in'/></method>"
       "<method name='PrepareTabRestart'><arg type='s' direction='in'/><arg type='u' direction='in'/>"
         "<arg type='as' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='out'/></method>"
@@ -448,8 +451,14 @@ terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gcha
                       const gchar *method, GVariant *parameters, GDBusMethodInvocation *invocation)
 {
   const gchar *uuid, *service = NULL;
+  gboolean hold = FALSE;
+  gboolean confirmed = FALSE;
   TerminalWindow *window = NULL;
-  if (g_str_equal (method, "CloseForUpdate"))
+  if (g_str_equal (method, "HoldForUpdate"))
+    g_variant_get (parameters, "(&s&sb)", &uuid, &service, &hold);
+  else if (g_str_equal (method, "UpdateInPlaceWithConsent"))
+    g_variant_get (parameters, "(&sb)", &uuid, &confirmed);
+  else if (g_str_equal (method, "CloseForUpdate"))
     g_variant_get (parameters, "(&s&s)", &uuid, &service);
   else
     g_variant_get (parameters, "(&s)", &uuid);
@@ -478,6 +487,15 @@ terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gcha
                                             "The update caller must belong to the same user");
       return;
     }
+  if (g_str_equal (method, "HoldForUpdate"))
+    {
+      if (!terminal_update_hold (GTK_WINDOW (window), service, sender, hold))
+        g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+                                              "Only the pending update helper can hold this window");
+      else
+        g_dbus_method_invocation_return_value (invocation, NULL);
+      return;
+    }
   if (g_str_equal (method, "CloseForUpdate"))
     {
       if (!terminal_update_authorize_close (GTK_WINDOW (window), service, sender))
@@ -492,9 +510,12 @@ terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gcha
       return;
     }
   TerminalBuildMonitor *monitor = terminal_build_monitor_get ();
-  if (g_str_equal (method, "UpdateInPlace"))
+  if (g_str_equal (method, "UpdateInPlace") || g_str_equal (method, "UpdateInPlaceWithConsent"))
     {
-      if (terminal_gdbus_window_restarting (window))
+      if (g_str_equal (method, "UpdateInPlaceWithConsent") && !confirmed)
+        g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+                                              "Explicit terminal update consent is required");
+      else if (terminal_gdbus_window_restarting (window))
         g_dbus_method_invocation_return_error (invocation, G_IO_ERROR, G_IO_ERROR_BUSY,
                                               "A program replacement is already using this window");
       else if (!terminal_build_monitor_has_update (monitor) && !terminal_update_is_pending (GTK_WINDOW (window)))
@@ -505,7 +526,10 @@ terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gcha
                                               "Drop-down terminals cannot be updated in place");
       else
         {
-          terminal_update_in_place (GTK_WINDOW (window), uuid, monitor);
+          if (confirmed)
+            terminal_update_in_place_confirmed (GTK_WINDOW (window), uuid, monitor);
+          else
+            terminal_update_in_place (GTK_WINDOW (window), uuid, monitor);
           g_dbus_method_invocation_return_value (invocation,
               g_variant_new ("(s)", terminal_update_get_service (GTK_WINDOW (window))));
         }
@@ -517,6 +541,8 @@ terminal_gdbus_update (TerminalApp *app, GDBusConnection *connection, const gcha
           && g_strcmp0 (G_OBJECT_TYPE_NAME (window), "TerminalWindowDropdown") != 0);
       json_object_set_boolean_member (object, "pending", terminal_update_is_pending (GTK_WINDOW (window))
           || terminal_gdbus_window_restarting (window));
+      json_object_set_int_member (object, "lifecycle_protocol", 1);
+      json_object_set_boolean_member (object, "confirmed_updates", TRUE);
       json_object_set_string_member (object, "service", terminal_update_get_service (GTK_WINDOW (window)));
       JsonNode *node = json_node_new (JSON_NODE_OBJECT);
       json_node_take_object (node, object);
@@ -619,7 +645,8 @@ terminal_gdbus_method_call (GDBusConnection *connection,
       terminal_gdbus_tab_restart (app, connection, sender, method_name, parameters, invocation);
     }
   else if (g_str_equal (method_name, "GetUpdateStatus") || g_str_equal (method_name, "UpdateInPlace")
-           || g_str_equal (method_name, "CloseForUpdate"))
+           || g_str_equal (method_name, "UpdateInPlaceWithConsent")
+           || g_str_equal (method_name, "CloseForUpdate") || g_str_equal (method_name, "HoldForUpdate"))
     {
       terminal_gdbus_update (app, connection, sender, method_name, parameters, invocation);
     }

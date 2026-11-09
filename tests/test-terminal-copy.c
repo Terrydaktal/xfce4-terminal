@@ -690,7 +690,59 @@ wait_update_item (GtkWidget *item, gboolean sensitive)
   while (gtk_widget_get_sensitive (item) != sensitive && g_get_monotonic_time () < deadline)
     settle ();
   g_assert_cmpint (gtk_widget_get_sensitive (item), ==, sensitive);
+  g_assert_true (gtk_widget_get_visible (item));
   g_object_unref (monitor);
+}
+
+static void
+unexpected_launcher_call (GDBusConnection *connection,
+                          const gchar *sender,
+                          const gchar *path,
+                          const gchar *interface,
+                          const gchar *method,
+                          GVariant *parameters,
+                          GDBusMethodInvocation *invocation,
+                          gpointer data)
+{
+  guint *calls = data;
+  (*calls)++;
+  g_dbus_method_invocation_return_error (
+    invocation, G_IO_ERROR, G_IO_ERROR_FAILED,
+    "Terminal-initiated updates must not contact Application Launcher");
+}
+
+static GDBusConnection *
+watch_launcher_calls (guint *calls, guint *registration)
+{
+  GError *error = NULL;
+  GDBusConnection *connection = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, &error);
+  g_assert_no_error (error);
+  GDBusNodeInfo *node = g_dbus_node_info_new_for_xml (
+    "<node><interface name='com.terrydaktal.ApplicationLauncher.Tracker1'>"
+    "<method name='BeginTerminalUpgradePreview'><arg type='s' direction='out'/></method>"
+    "<method name='GetTerminalUpgradeReport'><arg type='s' direction='in'/>"
+    "<arg type='s' direction='out'/></method>"
+    "<method name='StartTerminalUpgrade'><arg type='s' direction='in'/>"
+    "<arg type='as' direction='in'/><arg type='b' direction='in'/>"
+    "<arg type='s' direction='out'/></method></interface></node>",
+    &error);
+  g_assert_no_error (error);
+  static const GDBusInterfaceVTable table = { .method_call = unexpected_launcher_call };
+  *registration = g_dbus_connection_register_object (
+    connection, "/Tracker", node->interfaces[0], &table, calls, NULL, &error);
+  g_assert_no_error (error);
+  g_dbus_node_info_unref (node);
+  GVariant *reply = g_dbus_connection_call_sync (
+    connection, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+    "org.freedesktop.DBus", "RequestName",
+    g_variant_new ("(su)", "com.terrydaktal.ApplicationLauncher", 4),
+    G_VARIANT_TYPE ("(u)"), 0, 1000, NULL, &error);
+  g_assert_no_error (error);
+  guint result;
+  g_variant_get (reply, "(u)", &result);
+  g_assert_cmpuint (result, ==, 1);
+  g_variant_unref (reply);
+  return connection;
 }
 
 static void
@@ -700,15 +752,19 @@ update_context_menu (Fixture *fixture, gconstpointer data)
   GtkWidget *menu = NULL;
   GtkWidget *update = NULL;
   GList *items;
+  guint launcher_calls = 0, registration = 0;
+  GDBusConnection *launcher = data != NULL ? watch_launcher_calls (&launcher_calls, &registration) : NULL;
   g_signal_emit_by_name (screen, "get-context-menu", &menu);
   g_assert_nonnull (menu);
   g_object_ref_sink (menu);
+  gtk_widget_show_all (menu);
   items = gtk_container_get_children (GTK_CONTAINER (menu));
   for (GList *item = items; item != NULL; item = item->next)
     if (g_strcmp0 (gtk_menu_item_get_label (item->data), "_Update in Place") == 0)
       update = item->data;
   g_list_free (items);
   g_assert_nonnull (update);
+  g_assert_true (gtk_widget_get_visible (update));
   g_assert_false (gtk_widget_get_sensitive (update));
   gtk_menu_item_activate (GTK_MENU_ITEM (update));
   g_assert_false (terminal_update_is_pending (GTK_WINDOW (fixture->window)));
@@ -751,6 +807,19 @@ update_context_menu (Fixture *fixture, gconstpointer data)
     if (GTK_IS_DIALOG (item->data) && gtk_window_get_transient_for (item->data) == GTK_WINDOW (fixture->window))
       gtk_widget_destroy (item->data);
   g_list_free (windows);
+  if (launcher != NULL)
+    {
+      g_assert_cmpuint (launcher_calls, ==, 0);
+      g_dbus_connection_unregister_object (launcher, registration);
+      GVariant *reply = g_dbus_connection_call_sync (
+        launcher, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+        "org.freedesktop.DBus", "ReleaseName",
+        g_variant_new ("(s)", "com.terrydaktal.ApplicationLauncher"),
+        G_VARIANT_TYPE ("(u)"), 0, 1000, NULL, NULL);
+      g_assert_nonnull (reply);
+      g_variant_unref (reply);
+      g_object_unref (launcher);
+    }
 }
 
 int
@@ -779,6 +848,7 @@ main (int argc, char **argv)
   terminal_launching_register_tests ();
   g_test_add_func ("/terminal/title/active-application-build", window_application_title);
   g_test_add ("/terminal/update/context-menu", Fixture, NULL, setup_window, update_context_menu, teardown);
+  g_test_add ("/terminal/update/context-menu-with-launcher", Fixture, GINT_TO_POINTER (TRUE), setup_window, update_context_menu, teardown);
   g_test_add ("/terminal/title/stale-build-and-rollback", Fixture, NULL,
               setup_window, window_build_title, teardown);
   g_test_add ("/terminal/copy/native-selection", Fixture, NULL,

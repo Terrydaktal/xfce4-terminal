@@ -1,6 +1,5 @@
-/* The terminal owns its update; the short-lived helper survives GTK shutdown.
+/* Native update mechanics; shared lifecycle policy runs outside GTK.
  */
-#include <glib/gi18n.h>
 #include <glib/gstdio.h>
 #include <json-glib/json-glib.h>
 #include <stdio.h>
@@ -8,7 +7,9 @@
 #include <unistd.h>
 
 #include "terminal-build-id.h"
+#include "terminal-screen.h"
 #include "terminal-update.h"
+#include "terminal-window.h"
 
 #define UPDATE_PATH "/org/xfce/Terminal/Update"
 #define UPDATE_INTERFACE "org.xfce.Terminal.Update1"
@@ -27,8 +28,37 @@ typedef struct
   gchar *service, *owner, *uuid, *operation, *title;
   gchar *executable, *build_id, *description, *log_path;
   gulong destroy_id;
-  gboolean preserves_processes, destroyed, handoff;
+  GPtrArray *held_screens;
+  gboolean preserves_processes, destroyed, handoff, confirmed;
 } Update;
+
+typedef struct
+{
+  TerminalScreen *screen;
+  gboolean hold, input, destroyed;
+  gulong destroy_id;
+} HeldScreen;
+
+static void
+held_screen_destroyed (GtkWidget *widget, HeldScreen *held)
+{
+  held->destroyed = TRUE;
+}
+
+static void
+release_screen (gpointer data)
+{
+  HeldScreen *held = data;
+  if (!held->destroyed)
+    {
+      terminal_screen_restart_hold (held->screen, held->hold);
+      terminal_screen_set_input_enabled (held->screen, held->input);
+    }
+  if (g_signal_handler_is_connected (held->screen, held->destroy_id))
+    g_signal_handler_disconnect (held->screen, held->destroy_id);
+  g_object_unref (held->screen);
+  g_free (held);
+}
 
 static Update *
 update_ref (Update *update)
@@ -54,6 +84,7 @@ update_unref (gpointer data)
   if (!g_atomic_ref_count_dec (&update->refs))
     return;
   cancel_helper (update);
+  g_clear_pointer (&update->held_screens, g_ptr_array_unref);
   g_object_set_data (G_OBJECT (update->window), PENDING_KEY, NULL);
   if (g_signal_handler_is_connected (update->window, update->destroy_id))
     g_signal_handler_disconnect (update->window, update->destroy_id);
@@ -150,7 +181,7 @@ resolve_executable (Update *update)
 static gboolean
 wait_for_state (Update *update, gboolean preparing, GError **error)
 {
-  gint64 deadline = g_get_monotonic_time () + (preparing ? 90 : 120) * G_TIME_SPAN_SECOND;
+  gint64 deadline = g_get_monotonic_time () + (preparing ? 90 : 300) * G_TIME_SPAN_SECOND;
   while (g_get_monotonic_time () < deadline)
     {
       JsonNode *node = call (update, "GetStatus", NULL, error);
@@ -434,7 +465,7 @@ prepare_done (GObject *source, GAsyncResult *result, gpointer data)
     }
   else if (!update->destroyed)
     {
-      if (update->preserves_processes)
+      if (update->preserves_processes || update->confirmed)
         run_worker (update, start_worker, start_done);
       else
         {
@@ -499,6 +530,36 @@ terminal_update_get_service (GtkWindow *window)
 }
 
 gboolean
+terminal_update_hold (GtkWindow *window, const gchar *service, const gchar *sender, gboolean hold)
+{
+  Update *update = g_object_get_data (G_OBJECT (window), PENDING_KEY);
+  if (update == NULL || update->destroyed || update->handoff || update->owner == NULL
+      || g_strcmp0 (service, update->service) != 0 || g_strcmp0 (sender, update->owner) != 0)
+    return FALSE;
+  if (!hold)
+    {
+      g_clear_pointer (&update->held_screens, g_ptr_array_unref);
+      return TRUE;
+    }
+  if (update->held_screens != NULL)
+    return TRUE;
+  update->held_screens = g_ptr_array_new_with_free_func (release_screen);
+  GList *tabs = gtk_container_get_children (GTK_CONTAINER (terminal_window_get_notebook (TERMINAL_WINDOW (window))));
+  for (GList *link = tabs; link != NULL; link = link->next)
+    {
+      HeldScreen *held = g_new0 (HeldScreen, 1);
+      held->screen = g_object_ref (TERMINAL_SCREEN (link->data));
+      held->input = terminal_screen_get_input_enabled (held->screen);
+      held->hold = terminal_screen_restart_hold (held->screen, TRUE);
+      held->destroy_id = g_signal_connect (held->screen, "destroy", G_CALLBACK (held_screen_destroyed), held);
+      terminal_screen_set_input_enabled (held->screen, FALSE);
+      g_ptr_array_add (update->held_screens, held);
+    }
+  g_list_free (tabs);
+  return TRUE;
+}
+
+gboolean
 terminal_update_authorize_close (GtkWindow *window, const gchar *service, const gchar *sender)
 {
   Update *update = g_object_get_data (G_OBJECT (window), PENDING_KEY);
@@ -510,8 +571,8 @@ terminal_update_authorize_close (GtkWindow *window, const gchar *service, const 
   return TRUE;
 }
 
-void
-terminal_update_in_place (GtkWindow *window, const gchar *window_uuid, TerminalBuildMonitor *monitor)
+static void
+terminal_update_begin (GtkWindow *window, const gchar *window_uuid, TerminalBuildMonitor *monitor, gboolean confirmed)
 {
   g_return_if_fail (GTK_IS_WINDOW (window));
   g_return_if_fail (window_uuid != NULL
@@ -533,10 +594,23 @@ terminal_update_in_place (GtkWindow *window, const gchar *window_uuid, TerminalB
                               ? gtk_window_get_title (window)
                               : "");
   update->monitor = g_object_ref (monitor);
+  update->confirmed = confirmed;
   update->cancel = g_cancellable_new ();
   g_object_set_data (G_OBJECT (window), PENDING_KEY, update);
   update->destroy_id = g_signal_connect (
     window, "destroy", G_CALLBACK (window_destroyed), update);
   run_worker (update, prepare_worker, prepare_done);
   update_unref (update);
+}
+
+void
+terminal_update_in_place (GtkWindow *window, const gchar *window_uuid, TerminalBuildMonitor *monitor)
+{
+  terminal_update_begin (window, window_uuid, monitor, FALSE);
+}
+
+void
+terminal_update_in_place_confirmed (GtkWindow *window, const gchar *window_uuid, TerminalBuildMonitor *monitor)
+{
+  terminal_update_begin (window, window_uuid, monitor, TRUE);
 }

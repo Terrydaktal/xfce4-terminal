@@ -165,4 +165,30 @@ if kwin_test.found()
     args: [files('test-terminal-update-wayland.py'), '--shell', '--confirm-module',
            update_confirm_module.full_path(), terminal_executable.full_path()],
     depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-codex', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--codex', '--confirm-module',
+           update_confirm_module.full_path(), terminal_executable.full_path()],
+    depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-confirmed-daemon-restart', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--codex', '--confirmed', '--restart-daemon', '--confirm-module',
+           update_confirm_module.full_path(), terminal_executable.full_path()],
+    depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-external-tmux', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--external', terminal_executable.full_path()],
+    depends: terminal_executable, timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-external-tmux-shell', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--external', '--tmux-shell', terminal_executable.full_path()],
+    depends: terminal_executable, timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-external-shell', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--external', '--shell', '--confirm-module',
+           update_confirm_module.full_path(), terminal_executable.full_path()],
+    depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-external-codex', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--external', '--codex', '--restart-daemon', '--confirm-module',
+           update_confirm_module.full_path(), terminal_executable.full_path()],
+    depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-external-without-tab-api', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--external', '--without-tab-api', '--codex', '--confirm-module',
+           update_confirm_module.full_path(), terminal_executable.full_path()],
+    depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
 endif
