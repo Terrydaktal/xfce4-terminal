@@ -1,6 +1,7 @@
 """Isolated transaction tests: no desktop session or user window is touched."""
 
 import copy
+import json
 import os
 from pathlib import Path
 import shutil
@@ -89,6 +90,58 @@ class LayoutTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
+    def test_pinned_execution_path_is_distinct_from_the_preserved_argv_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            descriptor = os.open("/bin/sh", os.O_RDONLY)
+            try:
+                image = f"/proc/{os.getpid()}/fd/{descriptor}"
+                tabs = [dict(argv=["original-program-name", "-c", 'printf "%s" "$0"'], executable=image)]
+                gates = core.StartupGates(directory, tabs)
+                child = subprocess.Popen(gates.commands(tabs, str(SOURCE / "terminal-update-helper.py"))[0],
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    self.assertTrue(self.wait_ready(gates, child.pid))
+                    gates.release()
+                    output, error = child.communicate(timeout=3)
+                    self.assertEqual(child.returncode, 0, error)
+                    self.assertEqual(output, b"original-program-name")
+                finally:
+                    gates.close()
+                    if child.poll() is None:
+                        child.terminate()
+                        child.communicate(timeout=3)
+            finally:
+                os.close(descriptor)
+
+    def test_environment_values_and_absence_survive_the_generic_startup_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tabs = [dict(argv=[sys.executable, "-c", "import json,os; print(json.dumps(dict(os.environ)))"],
+                         environment=dict(NO_COLOR=None, COLORTERM="truecolor", LC_CTYPE="C.UTF-8"))]
+            gates = core.StartupGates(directory, tabs)
+            environment = dict(os.environ, NO_COLOR="1", COLORTERM="wrong", XFCE4_TERMINAL_UPDATE_SERVICE="test")
+            child = subprocess.Popen(gates.commands(tabs, str(SOURCE / "terminal-update-helper.py"))[0],
+                                     env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                self.assertTrue(self.wait_ready(gates, child.pid))
+                gates.release()
+                output, error = child.communicate(timeout=3)
+                self.assertEqual(child.returncode, 0, error)
+                actual = json.loads(output)
+                self.assertNotIn("NO_COLOR", actual)
+                self.assertNotIn("XFCE4_TERMINAL_UPDATE_SERVICE", actual)
+                self.assertEqual(actual["COLORTERM"], "truecolor")
+                self.assertEqual(actual["LC_CTYPE"], "C.UTF-8")
+            finally:
+                gates.close()
+                if child.poll() is None:
+                    child.terminate()
+                    child.communicate(timeout=3)
+
+    def test_malformed_generic_environment_is_rejected_before_execution(self):
+        for environment in ([], {"bad=name": "value"}, {"NAME": 1}, {"NAME": "bad\0value"}, {"NAME": "x" * 65537}):
+            with self.subTest(environment=str(environment)[:40]), self.assertRaises(processes.UpdateError):
+                core.validate_environment(environment)
+
     def test_real_child_cannot_execute_until_release(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "executed"

@@ -89,9 +89,21 @@ class StartupGates:
             self.sockets.append(listener)
 
     def commands(self, tabs, helper):
-        return [tab["argv"] if listener is None else
-                [sys.executable, helper, "--gate", listener.getsockname(), "--", *tab["argv"]]
-                for listener, tab in zip(self.sockets, tabs, strict=True)]
+        commands = []
+        for listener, tab in zip(self.sockets, tabs, strict=True):
+            if listener is None:
+                commands.append(tab["argv"])
+                continue
+            command = [sys.executable, helper, "--gate", listener.getsockname()]
+            if "executable" in tab:
+                if not isinstance(tab["executable"], str) or not os.path.isabs(tab["executable"]) or "\0" in tab["executable"]:
+                    raise UpdateError("Invalid prepared executable path")
+                command.extend(["--executable", tab["executable"]])
+            if "environment" in tab:
+                validate_environment(tab["environment"])
+                command.extend(["--environment", json.dumps(tab["environment"])])
+            commands.append([*command, "--", *tab["argv"]])
+        return commands
 
     def ready(self, records):
         if len(records) != len(self.sockets):
@@ -132,20 +144,34 @@ class StartupGates:
             Path(name).unlink(missing_ok=True)
 
 
-def gate(path, arguments):
-    if not arguments or not os.path.isabs(arguments[0]):
+def validate_environment(environment):
+    if (not isinstance(environment, dict) or len(environment) > 128
+            or len(json.dumps(environment).encode()) > 65536
+            or any(not isinstance(key, str) or not key or "=" in key or "\0" in key
+                   or not isinstance(value, (str, type(None))) or (value is not None and "\0" in value)
+                   for key, value in environment.items())):
+        raise UpdateError("Invalid generic application environment")
+
+
+def gate(path, arguments, environment=None, executable=None):
+    executable = executable if executable is not None else arguments[0] if arguments else ""
+    if not arguments or not isinstance(executable, str) or not os.path.isabs(executable) or "\0" in executable:
         raise UpdateError("A fixed executable is required for terminal startup")
+    overrides = {} if environment is None else environment
+    validate_environment(overrides)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(120)
         connection.connect(path)
         if connection.recv(1) != b"S":
             return 125
-    # Old desktop activation tokens must not leak into restarted applications.
-    environment = os.environ.copy()
-    environment.pop("XDG_ACTIVATION_TOKEN", None)
-    environment.pop("DESKTOP_STARTUP_ID", None)
-    environment.pop("XFCE4_TERMINAL_UPDATE_SERVICE", None)
-    os.execve(arguments[0], arguments, environment)
+    child_environment = os.environ.copy()
+    child_environment.pop("XDG_ACTIVATION_TOKEN", None)
+    child_environment.pop("DESKTOP_STARTUP_ID", None)
+    child_environment.pop("XFCE4_TERMINAL_UPDATE_SERVICE", None)
+    for key, value in overrides.items():
+        if value is None: child_environment.pop(key, None)
+        else: child_environment[key] = value
+    os.execve(executable, arguments, child_environment)
 
 
 class UpdateJob:
