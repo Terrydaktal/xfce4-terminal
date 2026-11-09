@@ -211,6 +211,14 @@ whose saved normal geometry cannot be recovered are refused.
 
 Every tmux tab reattaches to its exact surviving server/session. The replacement
 is verified before the original closes, so programs inside tmux stay running.
+For non-tmux tabs the startup helper restores the raw per-tab OSC title once,
+before executing the restarted program. This keeps shell-supplied titles such
+as `htop ~` and `nvtop ~` without copying the old window's `Terminal` build
+indicator or freezing later application title updates. `ListTerminals()` exposes
+the optional `terminal_title` field for this purpose. When an older terminal
+cannot supply it, htop/nvtop get a command-and-directory fallback. Literal `%`
+characters are not interpreted as title templates; control sequences and
+oversized titles are rejected before starting the replacement.
 For non-tmux or mixed windows, the native menu confirmation explains that other programs will
 restart/resume and terminal scrollback, shell variables and unsaved/in-flight
 work will be lost. Explicit consent already collected by the launcher is accepted

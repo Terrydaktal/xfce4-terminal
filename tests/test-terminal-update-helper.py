@@ -147,7 +147,36 @@ class GateTests(unittest.TestCase):
             with self.subTest(environment=str(environment)[:40]), self.assertRaises(processes.UpdateError):
                 core.validate_environment(environment)
 
+    def test_restored_title_is_literal_output_before_the_application(self):
+        with tempfile.TemporaryDirectory() as directory:
+            title = "htop ~/100%/literal-%D 'quoted' \u03c0"
+            tabs = [dict(argv=["/bin/printf", "APPLICATION"], title=title)]
+            gates = core.StartupGates(directory, tabs)
+            child = subprocess.Popen(gates.commands(tabs, str(SOURCE / "terminal-update-helper.py"))[0],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                self.assertTrue(self.wait_ready(gates, child.pid))
+                self.assertFalse(select.select([child.stdout], [], [], 0)[0])
+                gates.release()
+                output, error = child.communicate(timeout=3)
+                self.assertEqual(child.returncode, 0, error)
+                self.assertEqual(output, b"\033]2;" + title.encode() + b"\007APPLICATION")
+            finally:
+                gates.close()
+                if child.poll() is None:
+                    child.terminate()
+                    child.communicate(timeout=3)
 
+    def test_unsafe_title_is_rejected_before_starting_a_replacement(self):
+        for title in ("bad\033]52;c;payload\007", "bad\nline", "bad\x9b31m", "x" * 16385):
+            with self.subTest(title=title[:20]), tempfile.TemporaryDirectory() as directory:
+                tabs = [dict(argv=["/bin/true"], title=title)]
+                gates = core.StartupGates(directory, tabs)
+                try:
+                    with self.assertRaisesRegex(processes.UpdateError, "title"):
+                        gates.commands(tabs, str(SOURCE / "terminal-update-helper.py"))
+                finally:
+                    gates.close()
 
     def test_real_child_cannot_execute_until_release(self):
         with tempfile.TemporaryDirectory() as directory:

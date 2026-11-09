@@ -165,6 +165,10 @@ if kwin_test.found()
     args: [files('test-terminal-update-wayland.py'), '--shell', '--confirm-module',
            update_confirm_module.full_path(), terminal_executable.full_path()],
     depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-titles', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--titles', '--confirm-module',
+           update_confirm_module.full_path(), terminal_executable.full_path()],
+    depends: [terminal_executable, update_confirm_module, application_fixture], timeout: 120, is_parallel: false)
   test('terminal-update-wayland-codex', find_program('python3'),
     args: [files('test-terminal-update-wayland.py'), '--codex', '--confirm-module',
            update_confirm_module.full_path(), terminal_executable.full_path()],

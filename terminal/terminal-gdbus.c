@@ -173,6 +173,7 @@ terminal_gdbus_list_terminals (TerminalApp *app,
           TerminalScreen *screen = TERMINAL_SCREEN (tab_link->data);
           const gchar *working_directory;
           const gchar *window_title;
+          const gchar *terminal_title;
           GPid child_pid;
           gint foreground_pgid;
           gchar *pty_name;
@@ -180,6 +181,7 @@ terminal_gdbus_list_terminals (TerminalApp *app,
 
           working_directory = terminal_screen_get_working_directory (screen);
           window_title = gtk_window_get_title (GTK_WINDOW (window));
+          terminal_title = terminal_screen_get_dynamic_title (screen);
           child_pid = terminal_screen_get_child_pid (screen);
           foreground_pgid = terminal_screen_get_foreground_process_group (screen);
           pty_name = terminal_screen_get_pty_name (screen);
@@ -190,6 +192,8 @@ terminal_gdbus_list_terminals (TerminalApp *app,
           g_variant_builder_add (&terminal, "{sv}", "active",
                                  g_variant_new_boolean (terminal_window_get_active (window) == screen));
           terminal_gdbus_dict_add_string (&terminal, "window_title", window_title);
+          if (terminal_title != NULL)
+            terminal_gdbus_dict_add_string (&terminal, "terminal_title", terminal_title);
           terminal_gdbus_dict_add_string (&terminal, "working_directory", working_directory);
           g_variant_builder_add (&terminal, "{sv}", "child_pid",
                                  g_variant_new_uint32 (child_pid > 0 ? (guint32) child_pid : 0));

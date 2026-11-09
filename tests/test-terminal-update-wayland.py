@@ -111,13 +111,16 @@ def run_session(binary):
             environment["XFCE4_TERMINAL_LAUNCH_PATH"] = str(binary)
             environment["XFCE4_TERMINAL_LAUNCH_KIND"] = "executable"
             shell_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "shell"
+            title_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "titles"
             codex_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "codex"
-            multiple_tabs = shell_mode
+            multiple_tabs = shell_mode or title_mode
+            titles = ["htop ~", "nvtop ~/literal-%D 'quoted'"]
             command = shlex.join([shutil.which("bash"), "--noprofile", "--norc"] if shell_mode else
                                  [shutil.which("tmux"), "-N", "-S", socket_path, "attach-session", "-t", "fixture"])
             tmux_shell = os.environ.get("XFCE_LIFECYCLE_TEST_TMUX_SHELL") == "1"
             if tmux_shell:
                 command = shlex.join([shutil.which("bash"), "--noprofile", "--norc", "-i", "-c", command + "; exec bash --noprofile --norc"])
+            title_commands = []
             codex_arguments = None
             if codex_mode:
                 fixture = Path(os.environ.get("XFCE_LIFECYCLE_CODEX_FIXTURE", str(Path(daemon_binary).resolve().parents[2] / "tests/fixtures/application_update_codex.c")))
@@ -141,12 +144,20 @@ def run_session(binary):
                 codex_arguments = [str(codex_binary), "resume", main_id, "--model", "fixture-model", "--profile", "fixture-profile",
                                    "--config", 'approval_policy="never"', "--dangerously-bypass-approvals-and-sandbox"]
                 command = shlex.join(codex_arguments)
+            if title_mode:
+                for name, title in zip(("htop", "nvtop"), titles, strict=True):
+                    program = root / name
+                    shutil.copyfile(binary.parent.parent / "tests/application-monitor-child", program)
+                    program.chmod(0o700)
+                    title_commands.append(shlex.join([shutil.which("sh"), "-c",
+                        'printf "\\033]2;%s\\007" "$1"; exec "$2"', "title-fixture", title, str(program)]))
+                command = title_commands[0]
             with open(root / "original.log", "wb") as terminal_log:
                 arguments = [str(old), "--disable-server", "--working-directory", str(root), "--command", command]
                 if multiple_tabs:
                     (root / "second-tab").mkdir()
                     arguments.extend(["--tab", "--working-directory", str(root / "second-tab"),
-                                      "--active-tab", "--command", command])
+                                      "--active-tab", "--command", title_commands[1] if title_mode else command])
                 original = subprocess.Popen(arguments, env=environment, stdout=terminal_log, stderr=terminal_log)
             owner = wait_for(lambda: backend.terminal_owner(original.pid))
             def original_records():
@@ -158,6 +169,8 @@ def run_session(binary):
                 records = original_records()
                 if len(records) != (2 if multiple_tabs else 1) or any(row["foreground_pgid"] <= 1 for row in records):
                     raise RuntimeError("Original tmux tab is not ready: " + json.dumps(records))
+                if title_mode and [row.get("terminal_title") for row in records] != titles:
+                    raise RuntimeError("Original per-tab titles are not ready")
                 if tmux_shell:
                     _, active = external.worker.foreground(records[0]["child_pid"], records[0]["foreground_pgid"])
                     assert external.worker.kind(active) == "tmux", "The shell has not started its tmux client"
@@ -267,7 +280,7 @@ def run_session(binary):
             placement_matches(saved, actual, saved["minimized"])
             assert subprocess.check_output(["tmux", "-N", "-S", socket_path, "display-message", "-p", "-t", "fixture",
                                             "#{pane_pid}"], timeout=3).decode().strip() == pane
-            if not (shell_mode or codex_mode):
+            if not (shell_mode or title_mode or codex_mode):
                 assert len(subprocess.check_output(["tmux", "-N", "-S", socket_path, "list-clients", "-F", "#{client_pid}"], timeout=3).splitlines()) == 1
             replacement_records = backend.records(backend.terminal_owner(replacement))
             assert len(replacement_records) == (2 if multiple_tabs else 1)
@@ -276,6 +289,32 @@ def run_session(binary):
                 else: assert (root / "confirmed").read_text() == "confirmed\n"
                 assert [row["active"] for row in replacement_records] == [False, True]
                 assert [os.path.realpath(row["working_directory"]) for row in replacement_records] == [str(root), str(root / "second-tab")]
+            if title_mode:
+                expected_title = saved["title"].replace("\u0336", "")
+                assert titles[1] in expected_title
+                def titles_restored():
+                    records = backend.records(backend.terminal_owner(replacement))
+                    # exec and process verification can precede VTE consuming
+                    # the gate's OSC output on the GTK main loop.
+                    if ([row.get("terminal_title") for row in records] != titles
+                            or records[1]["window_title"] != expected_title):
+                        raise RuntimeError("Waiting for restored OSC titles: " + json.dumps(records))
+                    return records
+                replacement_records = wait_for(titles_restored)
+                # A restored title is initial output, not a permanent custom-title override.
+                descriptor = os.open(replacement_records[1]["pty"], os.O_WRONLY | os.O_NOCTTY)
+                try:
+                    os.write(descriptor, b"\033]2;application changed its title\007")
+                finally:
+                    os.close(descriptor)
+                def title_changed():
+                    records = backend.records(backend.terminal_owner(replacement))
+                    if records[1].get("terminal_title") != "application changed its title":
+                        raise RuntimeError("Waiting for the application's new title")
+                    assert records[0]["terminal_title"] == titles[0]
+                    assert records[1]["window_title"] == expected_title.replace(titles[1], "application changed its title")
+                    return records
+                wait_for(title_changed)
             if codex_mode:
                 root_pid = replacement_records[0]["child_pid"]
                 candidates = [root_pid, *map(int, Path(f"/proc/{root_pid}/task/{root_pid}/children").read_text().split())]
@@ -306,7 +345,7 @@ def run_session(binary):
                     return records
                 wait_for(returned_to_fish)
                 placement_matches(saved, backend.kwin("capture", pid=replacement, id=actual["id"]), saved["minimized"])
-            print(json.dumps(dict(result="passed", transport="external" if external_mode else "native", mode="codex" if codex_mode else "shell" if shell_mode else "tmux", old_pid=original.pid, replacement_pid=replacement,
+            print(json.dumps(dict(result="passed", transport="external" if external_mode else "native", mode="codex" if codex_mode else "titles" if title_mode else "shell" if shell_mode else "tmux", old_pid=original.pid, replacement_pid=replacement,
                                   geometry=actual["geometry"], tmux_pane_pid=pane)), flush=True)
         except Exception as error:
             failures.append(str(error))
@@ -376,9 +415,9 @@ def main():
         private_vte = binary.parent.parent / "subprojects/vte-0.84.1/src"
         if private_vte.is_dir():
             environment["LD_LIBRARY_PATH"] = str(private_vte) + ":" + environment.get("LD_LIBRARY_PATH", "")
-        if "--shell" in sys.argv or "--codex" in sys.argv:
+        if "--shell" in sys.argv or "--titles" in sys.argv or "--codex" in sys.argv:
             module = sys.argv[sys.argv.index("--confirm-module") + 1]
-            environment.update(XFCE_UPDATE_TEST_MODE="codex" if "--codex" in sys.argv else "shell", GTK3_MODULES=str(Path(module).resolve()),
+            environment.update(XFCE_UPDATE_TEST_MODE="codex" if "--codex" in sys.argv else "titles" if "--titles" in sys.argv else "shell", GTK3_MODULES=str(Path(module).resolve()),
                                XFCE_UPDATE_TEST_CONFIRM_LOG=str(root / "confirmed"))
         if "--restart-daemon" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_RESTART"] = "1"

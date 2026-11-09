@@ -38,7 +38,11 @@ main (int argc, char **argv)
   cfmakeraw (&settings);
   if (tcsetattr (STDIN_FILENO, TCSANOW, &settings) != 0)
     return 1;
-  printf ("\033]0;codex - monitor fixture - Terminal\aREADY:%d\r\n", FIXTURE_VERSION);
+  const char *name = strrchr (argv[0], '/');
+  name = name != NULL ? name + 1 : argv[0];
+  if (strcmp (name, "htop") != 0 && strcmp (name, "nvtop") != 0)
+    printf ("\033]0;codex - monitor fixture - Terminal\a");
+  printf ("READY:%d\r\n", FIXTURE_VERSION);
   fflush (stdout);
   while (read (STDIN_FILENO, &input, 1) == 1)
     {

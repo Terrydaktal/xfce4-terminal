@@ -70,6 +70,11 @@ def terminal_arguments(tabs, gate_commands, columns=0, rows=0):
     return arguments
 
 
+def title_sequence(title):
+    if (not isinstance(title, str) or len(title.encode("utf-8")) > 16384
+            or any(ord(char) < 32 or 127 <= ord(char) < 160 for char in title)):
+        raise UpdateError("The restored terminal title is unsafe or oversized")
+    return b"\033]2;" + title.encode("utf-8") + b"\007"
 
 
 class StartupGates:
@@ -95,6 +100,9 @@ class StartupGates:
             if "environment" in tab:
                 validate_environment(tab["environment"])
                 command.extend(["--environment", json.dumps(tab["environment"])])
+            if "title" in tab:
+                title_sequence(tab["title"])
+                command.extend(["--title", tab["title"]])
             commands.append([*command, "--", *tab["argv"]])
         return commands
 
@@ -141,16 +149,19 @@ def validate_environment(environment):
         raise UpdateError("Invalid generic application environment")
 
 
-def gate(path, arguments, environment=None, executable=None):
+def gate(path, arguments, title=None, environment=None, executable=None):
     executable = executable if executable is not None else arguments[0] if arguments else ""
     if not arguments or not isinstance(executable, str) or not os.path.isabs(executable) or "\0" in executable:
         raise UpdateError("A fixed executable is required for terminal startup")
+    sequence = title_sequence(title) if title is not None else b""
     overrides = {} if environment is None else environment
     validate_environment(overrides)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.connect(path)
         if connection.recv(1) != b"S":
             return 125
+    if sequence:
+        os.write(1, sequence)
     child_environment = os.environ.copy()
     child_environment.pop("XFCE4_TERMINAL_UPDATE_SERVICE", None)
     for key, value in overrides.items():

@@ -2567,6 +2567,15 @@ terminal_screen_get_title (TerminalScreen *screen)
 
 
 
+const gchar *
+terminal_screen_get_dynamic_title (TerminalScreen *screen)
+{
+  g_return_val_if_fail (TERMINAL_IS_SCREEN (screen), NULL);
+  return vte_terminal_get_window_title (VTE_TERMINAL (screen->terminal));
+}
+
+
+
 /**
  * terminal_screen_get_working_directory:
  * @screen      : A #TerminalScreen.
@@ -2673,6 +2682,10 @@ terminal_screen_copy_clipboard_html (TerminalScreen *screen)
   g_return_if_fail (TERMINAL_IS_SCREEN (screen));
   vte_terminal_copy_clipboard_format (VTE_TERMINAL (screen->terminal), VTE_FORMAT_HTML);
 }
+
+
+
+
 
 
 

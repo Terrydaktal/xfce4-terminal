@@ -95,6 +95,9 @@ gchar *
 terminal_screen_get_title (TerminalScreen *screen);
 
 const gchar *
+terminal_screen_get_dynamic_title (TerminalScreen *screen);
+
+const gchar *
 terminal_screen_get_working_directory (TerminalScreen *screen);
 void
 terminal_screen_set_working_directory (TerminalScreen *screen,

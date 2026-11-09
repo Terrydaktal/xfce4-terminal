@@ -81,6 +81,25 @@
       ]
     },
     {
+      "id": "UPDATE-08",
+      "behavior": "Restarted non-tmux tabs retain their raw per-tab title without the old Terminal decoration; htop/nvtop from older terminals get a command-and-directory fallback, and later application titles can replace the initial title",
+      "tests": [
+        "test_window_planning_preserves_raw_monitor_titles_and_legacy_directory_fallbacks",
+        "test_restored_title_is_literal_output_before_the_application",
+        "terminal-update-wayland-titles"
+      ]
+    },
+    {
+      "id": "UPDATE-09",
+      "behavior": "Restored titles preserve percent signs, quotes and Unicode literally; control sequences and oversized titles are refused before replacement startup, while tmux attachment commands remain unchanged",
+      "tests": [
+        "test_restored_title_is_literal_output_before_the_application",
+        "test_unsafe_title_is_rejected_before_starting_a_replacement",
+        "test_generic_staging_gates_every_command_without_interpreting_tmux",
+        "terminal-update-wayland-titles"
+      ]
+    },
+    {
       "id": "UPDATE-10",
       "behavior": "The terminal menu and enhanced native clients use one mechanics helper and one shared daemon-owned application policy. Missing or old lifecycle support refuses before application shutdown. For older running terminals without update/hold APIs, the daemon supplies external CLI/KWin mechanics with the same coordinator, optionally using ListTerminals; no tab API requires exactly one window and controlling PTY. There is no duplicate Codex/session detector in the terminal helper",
       "tests": [

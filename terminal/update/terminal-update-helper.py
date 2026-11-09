@@ -343,13 +343,14 @@ def main(arguments):
         index, options = 2, {}
         while index < len(arguments) and arguments[index] != "--":
             option = arguments[index]
-            if option not in ("--environment", "--executable") or option in options or index + 1 >= len(arguments):
+            if option not in ("--title", "--environment", "--executable") or option in options or index + 1 >= len(arguments):
                 raise UpdateError("Invalid prepared startup gate options")
             options[option] = arguments[index + 1]
             index += 2
         if index >= len(arguments) - 1:
             raise UpdateError("The prepared startup command is missing")
-        return gate(arguments[1], arguments[index + 1:], environment=json.loads(options["--environment"]) if "--environment" in options else None,
+        return gate(arguments[1], arguments[index + 1:], title=options.get("--title"),
+                    environment=json.loads(options["--environment"]) if "--environment" in options else None,
                     executable=options.get("--executable"))
     if len(arguments) == 2 and arguments[0] == "--serve" and len(arguments[1]) <= 65536:
         serve(json.loads(arguments[1]))
