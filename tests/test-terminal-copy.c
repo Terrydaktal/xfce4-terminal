@@ -1085,6 +1085,137 @@ watch_launcher_calls (guint *calls, guint *registration)
 }
 
 static void
+assert_window_menu_header (GtkWidget *menu)
+{
+  GList *items = gtk_container_get_children (GTK_CONTAINER (menu));
+  GtkWidget *image = NULL;
+  const gchar *icon = NULL;
+
+  g_assert_cmpstr (gtk_menu_item_get_label (g_list_nth_data (items, 0)), ==, "Show _Info");
+  g_assert_cmpstr (gtk_menu_item_get_label (g_list_nth_data (items, 1)), ==, "_Update in Place");
+  g_assert_true (GTK_IS_SEPARATOR_MENU_ITEM (g_list_nth_data (items, 2)));
+  find_menu_image (g_list_nth_data (items, 0), &image);
+  g_assert_true (GTK_IS_IMAGE (image));
+  gtk_image_get_icon_name (GTK_IMAGE (image), &icon, NULL);
+  g_assert_cmpstr (icon, ==, "help-about-symbolic");
+  g_list_free (items);
+}
+
+static void
+show_info_context_menu (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
+{
+  TerminalScreen *screen = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
+  gchar *directory = g_dir_make_tmp ("terminal-show-info.XXXXXX", NULL);
+  gchar *program = g_build_filename (directory, "applicationlauncher", NULL);
+  gchar *log = g_build_filename (directory, "request", NULL);
+  gchar *path = g_strdup (g_getenv ("PATH"));
+  gchar *search = g_strconcat (directory, G_SEARCHPATH_SEPARATOR_S, path, NULL);
+  gchar *expected = g_strdup_printf ("%ld\n%s\n", (long) getpid (),
+                                     terminal_window_get_uuid (TERMINAL_WINDOW (fixture->window)));
+  gchar *actual = NULL;
+  GtkWidget *menu = NULL;
+
+  g_assert_cmpint (symlink (self, program), ==, 0);
+  g_setenv ("PATH", search, TRUE);
+  g_setenv ("TERMINAL_TEST_INFO_REQUEST", log, TRUE);
+  g_signal_emit_by_name (screen, "get-context-menu", &menu);
+  g_object_ref_sink (menu);
+  assert_window_menu_header (menu);
+  GList *items = gtk_container_get_children (GTK_CONTAINER (menu));
+  g_assert_cmpstr (gtk_menu_item_get_label (g_list_nth_data (items, 3)), ==, "Open _Tab");
+  gtk_menu_item_activate (GTK_MENU_ITEM (items->data));
+  g_list_free (items);
+  gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+  while (!g_file_get_contents (log, &actual, NULL, NULL) && g_get_monotonic_time () < deadline)
+    settle ();
+  g_assert_cmpstr (actual, ==, expected);
+  g_setenv ("PATH", path, TRUE);
+  g_unsetenv ("TERMINAL_TEST_INFO_REQUEST");
+  gtk_widget_destroy (menu);
+  g_object_unref (menu);
+  remove_test_directory (directory);
+  g_free (actual);
+  g_free (expected);
+  g_free (search);
+  g_free (path);
+  g_free (log);
+  g_free (program);
+  g_free (directory);
+}
+
+static gboolean
+close_link_menu (gpointer menu)
+{
+  gtk_menu_shell_deactivate (GTK_MENU_SHELL (menu));
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+inspect_link_menu (GSignalInvocationHint *hint, guint n_values,
+                   const GValue *values, gpointer data)
+{
+  GtkWidget *menu = g_value_get_object (&values[0]);
+  gboolean *seen = data;
+
+  if (GTK_IS_MENU (menu))
+    {
+      GList *items = gtk_container_get_children (GTK_CONTAINER (menu));
+      assert_window_menu_header (menu);
+      g_assert_cmpstr (gtk_menu_item_get_label (g_list_nth_data (items, 3)), ==, "Open Link");
+      g_assert_cmpstr (gtk_menu_item_get_label (g_list_nth_data (items, 4)), ==, "Copy Link Address");
+      g_assert_true (GTK_IS_SEPARATOR_MENU_ITEM (g_list_nth_data (items, 5)));
+      g_list_free (items);
+      *seen = TRUE;
+      g_idle_add (close_link_menu, menu);
+    }
+  return TRUE;
+}
+
+static void
+link_context_menu_order (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
+{
+  gboolean seen = FALSE;
+  GtkBorder padding;
+  GdkWindow *window = gtk_widget_get_window (fixture->widget);
+  GdkDevice *pointer = gdk_seat_get_pointer (gdk_display_get_default_seat (gdk_window_get_display (window)));
+  GList *children = gdk_window_get_children (window);
+
+  for (GList *child = children; child != NULL; child = child->next)
+    {
+      gpointer owner;
+      gdk_window_get_user_data (child->data, &owner);
+      if (owner == fixture->widget && gdk_window_is_input_only (child->data))
+        {
+          window = child->data;
+          break;
+        }
+    }
+  g_list_free (children);
+
+  g_object_set (fixture->preferences, "misc-right-click-action", TERMINAL_RIGHT_CLICK_ACTION_CONTEXT_MENU,
+                "misc-hyperlink-open-button", 1u, "misc-hyperlinks-enabled", TRUE, NULL);
+  vte_terminal_feed (fixture->terminal, "\033[2J\033[H\033]8;;https://example.com/test\033\\example\033]8;;\033\\", -1);
+  settle ();
+  gtk_style_context_get_padding (gtk_widget_get_style_context (fixture->widget), GTK_STATE_FLAG_NORMAL, &padding);
+  guint show_signal = g_signal_lookup ("show", GTK_TYPE_WIDGET);
+  gulong hook = g_signal_add_emission_hook (show_signal, 0, inspect_link_menu, &seen, NULL);
+  for (guint release = 0; release < 2; release++)
+    {
+      GdkEvent *event = gdk_event_new (release ? GDK_BUTTON_RELEASE : GDK_BUTTON_PRESS);
+      event->button.window = g_object_ref (window);
+      event->button.button = 3;
+      event->button.x = padding.left + 0.5 * vte_terminal_get_char_width (fixture->terminal);
+      event->button.y = padding.top + 0.5 * vte_terminal_get_char_height (fixture->terminal);
+      event->button.state = release ? GDK_BUTTON3_MASK : 0;
+      gdk_event_set_device (event, pointer);
+      gtk_widget_event (fixture->widget, event);
+      gdk_event_free (event);
+    }
+  g_signal_remove_emission_hook (show_signal, hook);
+  g_assert_true (seen);
+}
+
+static void
 update_context_menu (Fixture *fixture, gconstpointer data)
 {
   TerminalScreen *screen = TERMINAL_SCREEN (gtk_widget_get_ancestor (fixture->widget, TERMINAL_TYPE_SCREEN));
@@ -1097,6 +1228,7 @@ update_context_menu (Fixture *fixture, gconstpointer data)
   g_assert_nonnull (menu);
   g_object_ref_sink (menu);
   gtk_widget_show_all (menu);
+  assert_window_menu_header (menu);
   items = gtk_container_get_children (GTK_CONTAINER (menu));
   for (GList *item = items; item != NULL; item = item->next)
     if (g_strcmp0 (gtk_menu_item_get_label (item->data), "_Update in Place") == 0)
@@ -1164,6 +1296,13 @@ update_context_menu (Fixture *fixture, gconstpointer data)
 int
 main (int argc, char **argv)
 {
+  if (argc == 4 && strcmp (argv[1], "--show-terminal-info") == 0)
+    {
+      gchar *request = g_strdup_printf ("%s\n%s\n", argv[2], argv[3]);
+      gboolean saved = g_file_set_contents (g_getenv ("TERMINAL_TEST_INFO_REQUEST"), request, -1, NULL);
+      g_free (request);
+      return saved ? 0 : 1;
+    }
   if (argc == 4 && strcmp (argv[1], "--record") == 0)
     return record_input (argv[2], strcmp (argv[3], "mouse") == 0);
   if (g_getenv ("TERMINAL_MOUSE_TEST_SESSION") == NULL)
@@ -1185,6 +1324,8 @@ main (int argc, char **argv)
     return 77;
   terminal_update_register_tests (build_candidate);
   terminal_launching_register_tests ();
+  g_test_add ("/terminal/menu/show-info", Fixture, NULL, setup_window, show_info_context_menu, teardown);
+  g_test_add ("/terminal/menu/link-section-order", Fixture, NULL, setup_window, link_context_menu_order, teardown);
   g_test_add_func ("/terminal/title/active-application-build", window_application_title);
   g_test_add ("/terminal/update/context-menu", Fixture, NULL, setup_window, update_context_menu, teardown);
   g_test_add ("/terminal/update/context-menu-with-launcher", Fixture, GINT_TO_POINTER (TRUE), setup_window, update_context_menu, teardown);

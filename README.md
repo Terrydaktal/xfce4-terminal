@@ -365,10 +365,22 @@ keyboard or touch handling.
 
 ### Right-Click Menus With tmux
 
+The context menu starts with **Show Info** and **Update in Place**, followed by a
+separator and the link/open actions. **Show Info** opens Application Launcher's
+existing information window for this terminal, starting an info-only GUI if
+needed; only the information window is shown. Its menu icon uses the theme's
+monochrome symbolic information action. The request passes the terminal PID and
+lifetime window UUID, not the foreground program or
+whichever window is focused later; ambiguous or closed windows are not guessed.
+The launcher needs the matching `--show-terminal-info PID WINDOW_UUID` support.
+`python3 tests/test-show-info-only.py LAUNCHER_BINARY TERMINAL_BINARY` verifies popup-only
+startup, forwarding, errors and cleanup under a private KWin/session bus, without
+restarting existing user windows.
+
 At a shell or another non-mouse-aware pane, ordinary right-click opens XFCE's
-configured context menu, including Preferences and Update in Place. It also works
-while reading or selecting tmux history, without clearing the selection or moving
-the viewport. Mouse-aware applications retain right-click input; Shift+right-click
+configured context menu, including Preferences and these window actions. It also
+works while reading or selecting tmux history, without clearing the selection or
+moving the viewport. Mouse-aware applications retain right-click input; Shift+right-click
 opens the terminal menu instead, just as outside tmux.
 
 The terminal checks the active pane of its attached local tmux client, using the

@@ -837,6 +837,7 @@ terminal_widget_context_menu (TerminalWidget *widget,
   GtkWidget *item_open = NULL;
   GtkWidget *item_separator = NULL;
   GList *children;
+  gint link_position;
   guint id;
   TerminalHyperlink link;
 
@@ -844,17 +845,19 @@ terminal_widget_context_menu (TerminalWidget *widget,
   if (G_UNLIKELY (menu == NULL))
     return;
 
+  link_position = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (menu), "terminal-context-menu-link-position"));
+
   /* check if we have a match */
   link = terminal_widget_get_link (widget, (GdkEvent *) event);
   if (G_UNLIKELY (link.uri != NULL))
     {
-      /* prepend a separator to the menu if it does not already contain one */
+      /* Keep the window actions above the link-specific section. */
       children = gtk_container_get_children (GTK_CONTAINER (menu));
-      item_separator = g_list_nth_data (children, 0);
+      item_separator = g_list_nth_data (children, link_position);
       if (!GTK_IS_SEPARATOR_MENU_ITEM (item_separator))
         {
           item_separator = gtk_separator_menu_item_new ();
-          gtk_menu_shell_prepend (GTK_MENU_SHELL (menu), item_separator);
+          gtk_menu_shell_insert (GTK_MENU_SHELL (menu), item_separator, link_position);
         }
       else
         item_separator = NULL;
@@ -878,11 +881,11 @@ terminal_widget_context_menu (TerminalWidget *widget,
           item_open = gtk_menu_item_new_with_label (_("Open Link"));
         }
 
-      /* prepend the "COPY" menu item */
+      /* Insert both link actions before their section separator. */
       g_object_set_data_full (G_OBJECT (item_copy), I_ ("terminal-widget-link"), g_strdup (link.uri), g_free);
       g_object_set_data_full (G_OBJECT (item_copy), I_ ("terminal-widget-link-type"), g_memdup (&link.type, sizeof (link.type)), g_free);
       g_signal_connect_swapped (G_OBJECT (item_copy), "activate", G_CALLBACK (terminal_widget_context_menu_copy), widget);
-      gtk_menu_shell_prepend (GTK_MENU_SHELL (menu), item_copy);
+      gtk_menu_shell_insert (GTK_MENU_SHELL (menu), item_copy, link_position);
 
       /* prepend the "OPEN" menu item */
       if (item_open != NULL)
@@ -890,7 +893,7 @@ terminal_widget_context_menu (TerminalWidget *widget,
           g_object_set_data_full (G_OBJECT (item_open), I_ ("terminal-widget-link"), g_strdup (link.uri), g_free);
           g_object_set_data_full (G_OBJECT (item_open), I_ ("terminal-widget-link-type"), g_memdup (&link.type, sizeof (link.type)), g_free);
           g_signal_connect_swapped (G_OBJECT (item_open), "activate", G_CALLBACK (terminal_widget_context_menu_open), widget);
-          gtk_menu_shell_prepend (GTK_MENU_SHELL (menu), item_open);
+          gtk_menu_shell_insert (GTK_MENU_SHELL (menu), item_open, link_position);
         }
 
       g_free (link.uri);
@@ -910,7 +913,7 @@ terminal_widget_context_menu (TerminalWidget *widget,
   gtk_menu_set_screen (GTK_MENU (menu), gtk_widget_get_screen (GTK_WIDGET (widget)));
 
   /* run our custom main loop */
-  gtk_menu_popup_at_pointer (GTK_MENU (menu), NULL);
+  gtk_menu_popup_at_pointer (GTK_MENU (menu), event);
   g_main_loop_run (loop);
   g_main_loop_unref (loop);
 

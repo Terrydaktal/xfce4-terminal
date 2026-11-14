@@ -218,6 +218,8 @@ terminal_window_action_new_tab (TerminalWindow *window);
 static gboolean
 terminal_window_action_new_window (TerminalWindow *window);
 static gboolean
+terminal_window_action_show_info (TerminalWindow *window);
+static gboolean
 terminal_window_action_update_in_place (TerminalWindow *window);
 static gboolean
 terminal_window_action_open_folder (TerminalWindow *window);
@@ -452,6 +454,16 @@ static XfceGtkActionEntry action_entries[] = {
     N_ ("Open a new terminal window"),
     "window-new",
     G_CALLBACK (terminal_window_action_new_window),
+  },
+  {
+    TERMINAL_WINDOW_ACTION_SHOW_INFO,
+    "<Actions>/terminal-window/show-info",
+    "",
+    XFCE_GTK_IMAGE_MENU_ITEM,
+    N_ ("Show _Info"),
+    N_ ("Show information about this window in Application Launcher"),
+    "help-about-symbolic",
+    G_CALLBACK (terminal_window_action_show_info),
   },
   {
     TERMINAL_WINDOW_ACTION_UPDATE_IN_PLACE,
@@ -2230,8 +2242,7 @@ terminal_window_get_context_menu (TerminalScreen *screen,
 
   context_menu = g_object_new (GTK_TYPE_MENU, NULL);
 
-  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_NEW_TAB), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
-  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_NEW_WINDOW), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
+  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_SHOW_INFO), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   update_item = xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_UPDATE_IN_PLACE), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   update_window = g_new0 (GWeakRef, 1);
   g_weak_ref_init (update_window, window);
@@ -2240,6 +2251,12 @@ terminal_window_get_context_menu (TerminalScreen *screen,
   g_signal_connect_object (window->priv->build_monitor, "changed",
                            G_CALLBACK (terminal_window_update_item_sensitive), update_item, 0);
   terminal_window_update_item_sensitive (window->priv->build_monitor, update_item);
+  xfce_gtk_menu_append_separator (GTK_MENU_SHELL (context_menu));
+  /* Link-specific actions belong below the window actions, not above them. */
+  g_object_set_data (G_OBJECT (context_menu), "terminal-context-menu-link-position", GINT_TO_POINTER (3));
+
+  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_NEW_TAB), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
+  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_NEW_WINDOW), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (TERMINAL_WINDOW_ACTION_OPEN_FOLDER), G_OBJECT (window), GTK_MENU_SHELL (context_menu));
   xfce_gtk_menu_append_separator (GTK_MENU_SHELL (context_menu));
 
@@ -2423,6 +2440,28 @@ terminal_window_action_new_window (TerminalWindow *window)
       g_free (directory);
     }
 
+  return TRUE;
+}
+
+
+
+static gboolean
+terminal_window_action_show_info (TerminalWindow *window)
+{
+  GError *error = NULL;
+  gchar *pid = g_strdup_printf ("%ld", (long) getpid ());
+  const gchar *argv[] = { "applicationlauncher", "--show-terminal-info", pid,
+                          terminal_window_get_uuid (window), NULL };
+
+  if (!g_spawn_async (NULL, (gchar **) argv, NULL, G_SPAWN_SEARCH_PATH,
+                      NULL, NULL, NULL, &error))
+    {
+      xfce_dialog_show_error (GTK_WINDOW (window), error,
+                              _("Failed to open window information in Application Launcher"));
+      g_error_free (error);
+    }
+
+  g_free (pid);
   return TRUE;
 }
 
