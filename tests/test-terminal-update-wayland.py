@@ -146,6 +146,10 @@ def run_session(binary):
                 codex_arguments = [str(codex_binary), "resume", main_id, "--model", "fixture-model", "--profile", "fixture-profile",
                                    "--config", 'approval_policy="never"', "--dangerously-bypass-approvals-and-sandbox"]
                 command = shlex.join(codex_arguments)
+                if os.environ.get("XFCE_LIFECYCLE_TEST_CODEX_IN_FISH") == "1":
+                    fish = os.environ.get("XFCE_LIFECYCLE_TEST_FISH") or shutil.which("fish")
+                    assert fish, "A real Fish executable is required"
+                    command = shlex.join([fish, "--no-config", "--interactive", "--init-command", command])
             if title_mode:
                 for name, title in zip(("htop", "nvtop"), titles, strict=True):
                     program = root / name
@@ -190,6 +194,14 @@ def run_session(binary):
             window_uuid = original_records()[0]["window_uuid"]
             if codex_mode:
                 original_codex_pid = original_records()[0]["child_pid"]
+                if os.environ.get("XFCE_LIFECYCLE_TEST_CODEX_IN_FISH") == "1":
+                    def codex_child():
+                        candidates = Path(f"/proc/{original_codex_pid}/task/{original_codex_pid}/children").read_text().split()
+                        matches = [int(pid) for pid in candidates
+                            if os.path.realpath(f"/proc/{pid}/exe") == str(codex_binary)]
+                        assert len(matches) == 1, "Waiting for Codex under the original Fish"
+                        return matches[0]
+                    original_codex_pid = wait_for(codex_child)
                 if os.environ.get("XFCE_LIFECYCLE_TEST_LATE_EXIT") == "1":
                     suspended_application = os.pidfd_open(original_codex_pid)
                     signal.pidfd_send_signal(suspended_application, signal.SIGSTOP)
@@ -477,6 +489,8 @@ def main():
             environment["XFCE_LIFECYCLE_TEST_NO_HOLD_API"] = "1"
         if "--late-application-exit" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_LATE_EXIT"] = "1"
+        if "--codex-in-fish" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_CODEX_IN_FISH"] = "1"
         if "--trace-worker" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_TRACE"] = "1"
         result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, "--session", str(binary)],

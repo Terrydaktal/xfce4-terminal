@@ -119,10 +119,13 @@
     },
     {
       "id": "UPDATE-12",
-      "behavior": "A failed interrupted native update keeps the original tab open with input restored, including child exit after helper cleanup; cancellation before interruption restores the original hold policy.",
+      "behavior": "A dedicated Fish return shell is kept until verified handover instead of being signalled while terminal input is held. A failed interrupted native update keeps the original tab open with input restored, including child exit after helper cleanup; cancellation before interruption restores the original hold policy",
       "tests": [
+        "test_codex_return_shell_is_not_signalled_before_replacement_verification",
+        "test_return_shell_starting_a_job_or_changing_image_blocks_handover",
         "test_interrupted_recovery_keeps_original_hold_until_native_cleanup",
         "test_recover_and_discard_have_distinct_window_hold_policies",
+        "terminal-update-wayland-codex-in-fish",
         "terminal-update-wayland-late-application-exit"
       ]
     },
