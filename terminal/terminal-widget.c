@@ -50,6 +50,10 @@
 #ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
 extern gboolean vte_terminal_get_selection_bounds (VteTerminal *, glong *, glong *,
                                                     glong *, glong *, gboolean *);
+extern gboolean vte_terminal_get_selection_drag_bounds (VteTerminal *, glong *, glong *,
+                                                        glong *, glong *, gboolean *,
+                                                        gboolean *, gboolean *);
+extern void vte_terminal_delegate_selection_drag (VteTerminal *);
 #endif
 
 
@@ -281,6 +285,8 @@ struct _TerminalWidget
   TerminalMouseSelection mouse_selection;
   gchar *tmux_selection_pane;
   pid_t tmux_selection_client;
+  gboolean tmux_selection_drag_failed;
+  gdouble selection_press_y;
   gboolean native_right_click;
   gboolean link_selection_drag_pending;
   gdouble link_selection_click_x;
@@ -3026,13 +3032,62 @@ terminal_widget_motion_notify_event (GtkWidget *widget,
       terminal_widget->link_selection_drag_pending = FALSE;
     }
 
-  if (!(event->state & GDK_BUTTON1_MASK)
-      || terminal_widget->mouse_selection == TERMINAL_MOUSE_SELECTION_DEFAULT)
+  if (!(event->state & GDK_BUTTON1_MASK))
     return GTK_WIDGET_CLASS (terminal_widget_parent_class)->motion_notify_event (widget, event);
 
   forwarded = gdk_event_copy ((GdkEvent *) event);
   forwarded->motion.state = terminal_widget_selection_modifiers (terminal_widget, event->state);
   handled = GTK_WIDGET_CLASS (terminal_widget_parent_class)->motion_notify_event (widget, &forwarded->motion);
+#ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
+  if (terminal_widget->mouse_selection != TERMINAL_MOUSE_SELECTION_APPLICATION)
+    {
+      VteTerminal *terminal = VTE_TERMINAL (widget);
+      GtkBorder padding;
+      glong sx, sy, ex, ey;
+      gboolean rectangle, beginning, reverse;
+      gtk_style_context_get_padding (gtk_widget_get_style_context (widget),
+                                     gtk_widget_get_state_flags (widget), &padding);
+      glong cell_height = vte_terminal_get_char_height (terminal);
+      glong bottom = padding.top + vte_terminal_get_row_count (terminal) * cell_height;
+      gint edge = event->y < padding.top + cell_height ? -1
+        : event->y >= bottom - cell_height ? 1 : 0;
+      /* Selecting horizontally on the first/last line is not an edge-scroll
+       * request. Require movement toward the edge, not ordinary hand jitter. */
+      if ((edge < 0 && event->y >= terminal_widget->selection_press_y - cell_height / 2.0)
+          || (edge > 0 && event->y <= terminal_widget->selection_press_y + cell_height / 2.0))
+        edge = 0;
+      if (edge != 0 && vte_terminal_get_selection_drag_bounds (terminal,
+          &sx, &sy, &ex, &ey, &rectangle, &beginning, &reverse))
+        {
+          VtePty *pty = vte_terminal_get_pty (terminal);
+          pid_t client = pty != NULL ? tcgetpgrp (vte_pty_get_fd (pty)) : -1;
+          if (client > 0 && terminal_widget_process_application (client) == TERMINAL_FOREGROUND_TMUX)
+            {
+              gchar *pane = terminal_widget->tmux_selection_drag_failed ? NULL
+                : terminal_tmux_begin_selection_drag (client, sx, sy, ex, ey, rectangle, beginning, reverse);
+              if (pane != NULL)
+                {
+                  g_free (terminal_widget->tmux_selection_pane);
+                  terminal_widget->tmux_selection_pane = pane;
+                  terminal_widget->tmux_selection_client = client;
+                  /* Keep the held button, but route subsequent motion/release
+                   * to the server that now owns the exact selection anchor. */
+                  vte_terminal_delegate_selection_drag (terminal);
+                  terminal_widget->mouse_selection = TERMINAL_MOUSE_SELECTION_APPLICATION;
+                }
+              else
+                terminal_widget->tmux_selection_drag_failed = TRUE;
+            }
+          else
+            {
+              /* VTE normally waits until the pointer leaves the widget. Use
+               * its existing timer as soon as the first/last row is reached. */
+              forwarded->motion.y = edge < 0 ? -1 : gtk_widget_get_allocated_height (widget) + 1;
+              GTK_WIDGET_CLASS (terminal_widget_parent_class)->motion_notify_event (widget, &forwarded->motion);
+            }
+        }
+    }
+#endif
   gdk_event_free (forwarded);
   return handled;
 }
@@ -3065,6 +3120,8 @@ terminal_widget_button_press_event (GtkWidget *widget,
     {
       terminal_widget->mouse_selection = TERMINAL_MOUSE_SELECTION_DEFAULT;
       terminal_widget->link_selection_drag_pending = FALSE;
+      terminal_widget->tmux_selection_drag_failed = FALSE;
+      terminal_widget->selection_press_y = event->y;
     }
 
   if (event->type == GDK_BUTTON_PRESS)

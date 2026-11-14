@@ -273,7 +273,8 @@ terminal_tmux_copy_selection (pid_t client_pid)
 
 static gchar *
 terminal_tmux_transfer_selection (pid_t client_pid, glong sx, glong sy,
-                                 glong ex, glong ey, gboolean rectangle)
+                                 glong ex, glong ey, gboolean rectangle,
+                                 gboolean drag, gboolean beginning, gboolean reverse)
 {
 #ifdef __linux__
   g_autofree gchar *socket = client_socket (client_pid);
@@ -311,20 +312,23 @@ terminal_tmux_transfer_selection (pid_t client_pid, glong sx, glong sy,
       g_autofree gchar *start_y = g_strdup_printf ("%ld", y0);
       g_autofree gchar *end_x = g_strdup_printf ("%ld", x1);
       g_autofree gchar *end_y = g_strdup_printf ("%ld", y1);
+      g_autofree gchar *flags = g_strdup_printf ("-%s%s%s%s",
+        rectangle ? "r" : "", drag ? "d" : "", beginning ? "b" : "", reverse ? "R" : "");
       const gchar *argv[] = { executable, "-N", "-S", socket,
         "copy-mode", "-t", pane, ";", "send-keys", "-c", target, "-t", pane, "-X",
-        "select-range", rectangle ? "-r" : "--", start_x, start_y, end_x, end_y,
+        "select-range", rectangle || drag ? flags : "--", start_x, start_y, end_x, end_y,
         ";", "display-message", "-p", "-t", pane,
-        "#{selection_native}", NULL };
+        drag ? "#{selection_native}:#{selection_active}" : "#{selection_native}", NULL };
       g_autofree gchar *result = query_command (argv);
       /* An older server silently ignores unknown copy commands. Require an
        * explicit acknowledgement before giving up the native highlight. */
-      if (result != NULL && strcmp (g_strstrip (result), "1") == 0)
+      if (result != NULL && strcmp (g_strstrip (result), drag ? "1:1" : "1") == 0)
         return g_strdup (pane);
       return NULL;
     }
 #else
   (void) client_pid; (void) sx; (void) sy; (void) ex; (void) ey; (void) rectangle;
+  (void) drag; (void) beginning; (void) reverse;
 #endif
   return NULL;
 }
@@ -333,9 +337,16 @@ gchar *
 terminal_tmux_retain_selection (pid_t client_pid, glong sx, glong sy,
                                glong ex, glong ey, gboolean rectangle)
 {
-  return terminal_tmux_transfer_selection (client_pid, sx, sy, ex, ey, rectangle);
+  return terminal_tmux_transfer_selection (client_pid, sx, sy, ex, ey, rectangle, FALSE, FALSE, FALSE);
 }
 
+gchar *
+terminal_tmux_begin_selection_drag (pid_t client_pid, glong sx, glong sy,
+                                   glong ex, glong ey, gboolean rectangle,
+                                   gboolean beginning, gboolean reverse)
+{
+  return terminal_tmux_transfer_selection (client_pid, sx, sy, ex, ey, rectangle, TRUE, beginning, reverse);
+}
 
 void
 terminal_tmux_clear_native_selection (pid_t client_pid, const gchar *pane)

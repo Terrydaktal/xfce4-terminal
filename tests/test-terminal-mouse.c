@@ -292,6 +292,50 @@ selection_tmux_command (const gchar *binary, const gchar *socket, const gchar *c
   g_object_unref (process);
 }
 
+#ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
+static void
+native_edge_autoscroll (Fixture *fixture, gconstpointer data)
+{
+  gboolean down = GPOINTER_TO_UINT (data) != 0;
+  g_autoptr (GString) history = g_string_new ("\033[H\033[2J");
+  for (guint i = 0; i < 120; i++)
+    g_string_append_printf (history, "row-%03u alpha beta gamma\r\n", i);
+  vte_terminal_feed (fixture->terminal, history->str, history->len);
+  settle ();
+  GtkAdjustment *adjustment = gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (fixture->widget));
+  gtk_adjustment_set_value (adjustment, gtk_adjustment_get_upper (adjustment));
+  settle ();
+  if (down)
+    {
+      gtk_adjustment_set_value (adjustment, gtk_adjustment_get_value (adjustment) - 20);
+      settle ();
+    }
+  gdouble start = gtk_adjustment_get_value (adjustment);
+  gint direction = down ? 1 : -1;
+  gdouble edge_row = down ? vte_terminal_get_row_count (fixture->terminal) - 0.5 : 0.5;
+  GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
+  gtk_clipboard_set_text (clipboard, "unchanged clipboard", -1);
+  mouse_event_at (fixture, GDK_BUTTON_PRESS, 1, 0, 4.1, down ? 2.5 : 5.5);
+  mouse_event_at (fixture, GDK_MOTION_NOTIFY, 1, GDK_BUTTON1_MASK, 3.1, edge_row);
+  gint64 deadline = g_get_monotonic_time () + 2 * G_USEC_PER_SEC;
+  while ((gtk_adjustment_get_value (adjustment) - start) * direction <= 0 && g_get_monotonic_time () < deadline)
+    settle ();
+  g_assert_cmpfloat ((gtk_adjustment_get_value (adjustment) - start) * direction, >, 0);
+  gdouble first = gtk_adjustment_get_value (adjustment);
+  while ((gtk_adjustment_get_value (adjustment) - first) * direction <= 0 && g_get_monotonic_time () < deadline)
+    settle ();
+  g_assert_cmpfloat ((gtk_adjustment_get_value (adjustment) - first) * direction, >, 0);
+  g_assert_true (vte_terminal_get_has_selection (fixture->terminal));
+  mouse_event_at (fixture, GDK_BUTTON_RELEASE, 1, GDK_BUTTON1_MASK, 3.1, edge_row);
+  settle ();
+  gdouble released = gtk_adjustment_get_value (adjustment);
+  for (guint i = 0; i < 3; i++)
+    settle ();
+  g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, released);
+  g_autofree gchar *text = gtk_clipboard_wait_for_text (clipboard);
+  g_assert_cmpstr (text, ==, "unchanged clipboard");
+}
+#endif
 
 static gchar *
 selection_tmux_run (const gchar *binary, const gchar *socket, const gchar *const *arguments)
@@ -449,6 +493,60 @@ selection_through_tmux (Fixture *fixture, gconstpointer data)
     g_assert_nonnull (strstr (input, "\033[<0;"));
   else
     g_assert_cmpstr (input, ==, "");
+  if (mode >= 5)
+    {
+      gboolean down = mode == 6 || mode == 8;
+      guint modifiers = mode >= 7 ? GDK_CONTROL_MASK : 0;
+      const gchar *offset[] = { "display-message", "-p", "#{scroll_position}", NULL };
+      const gchar *active[] = { "display-message", "-p", "#{selection_native}:#{selection_active}", NULL };
+      const gchar *buffer[] = { "set-buffer", "unchanged buffer", NULL };
+      g_free (selection_tmux_run (binary, socket, buffer));
+      if (down)
+        {
+          const gchar *up[] = { "copy-mode", ";", "send-keys", "-X", "-N", "20", "scroll-up", NULL };
+          g_free (selection_tmux_run (binary, socket, up));
+          settle ();
+        }
+      g_autofree gchar *initial = selection_tmux_run (binary, socket, offset);
+      glong initial_offset = g_ascii_strtoll (initial, NULL, 10);
+      gdouble edge_row = down ? vte_terminal_get_row_count (fixture->terminal) - 0.5 : 0.5;
+      mouse_event_at (fixture, GDK_BUTTON_PRESS, 1, modifiers, 6.1, 2.5);
+      mouse_event_at (fixture, GDK_MOTION_NOTIFY, 1, modifiers | GDK_BUTTON1_MASK, 3.1, edge_row);
+      deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
+      glong first = 0;
+      do
+        {
+          settle ();
+          g_autofree gchar *where = selection_tmux_run (binary, socket, offset);
+          first = (g_ascii_strtoll (where, NULL, 10) - initial_offset) * (down ? -1 : 1);
+        }
+      while (first < 3 && g_get_monotonic_time () < deadline);
+      g_assert_cmpint (first, >=, 3);
+      g_autofree gchar *state = selection_tmux_run (binary, socket, active);
+      g_assert_cmpstr (g_strstrip (state), ==, "1:1");
+      const gchar *anchor[] = { "display-message", "-p", down
+        ? "#{selection_start_x}:#{selection_start_y}" : "#{selection_end_x}:#{selection_end_y}", NULL };
+      g_autofree gchar *fixed = selection_tmux_run (binary, socket, anchor);
+      mouse_event_at (fixture, GDK_MOTION_NOTIFY, 1, modifiers | GDK_BUTTON1_MASK, 8.1, 4.5);
+      settle ();
+      g_autofree gchar *inside = selection_tmux_run (binary, socket, offset);
+      for (guint i = 0; i < 3; i++)
+        settle ();
+      g_autofree gchar *stopped = selection_tmux_run (binary, socket, offset);
+      g_assert_cmpstr (inside, ==, stopped);
+      mouse_event_at (fixture, GDK_BUTTON_RELEASE, 1, modifiers | GDK_BUTTON1_MASK, 8.1, 4.5);
+      settle ();
+      g_free (state);
+      state = selection_tmux_run (binary, socket, active);
+      g_assert_cmpstr (g_strstrip (state), ==, "1:0");
+      g_autofree gchar *retained_anchor = selection_tmux_run (binary, socket, anchor);
+      g_assert_cmpstr (retained_anchor, ==, fixed);
+      const gchar *show[] = { "show-buffer", NULL };
+      g_autofree gchar *uncopied = selection_tmux_run (binary, socket, show);
+      g_assert_cmpstr (uncopied, ==, "unchanged buffer");
+      g_autofree gchar *text = gtk_clipboard_wait_for_text (clipboard);
+      g_assert_cmpstr (text, ==, "unchanged clipboard");
+    }
   for (guint selection = 0; mode == 4 && selection < G_N_ELEMENTS (clicks) + 2; selection++)
     {
       g_test_message ("Retaining selection %u", selection);
@@ -800,6 +898,12 @@ main (int argc, char **argv)
   g_test_add ("/mouse/tmux-mouse-app-keeps-clicks", Fixture, GUINT_TO_POINTER (2), setup, selection_through_tmux, teardown);
 #ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
   g_test_add ("/mouse/tmux-selection-survives-scrolling", Fixture, GUINT_TO_POINTER (4), setup, selection_through_tmux, teardown);
+  g_test_add ("/mouse/tmux-edge-drag-autoscroll", Fixture, GUINT_TO_POINTER (5), setup, selection_through_tmux, teardown);
+  g_test_add ("/mouse/tmux-bottom-edge-drag-autoscroll", Fixture, GUINT_TO_POINTER (6), setup, selection_through_tmux, teardown);
+  g_test_add ("/mouse/tmux-box-edge-drag-autoscroll", Fixture, GUINT_TO_POINTER (7), setup, selection_through_tmux, teardown);
+  g_test_add ("/mouse/tmux-box-bottom-edge-drag-autoscroll", Fixture, GUINT_TO_POINTER (8), setup, selection_through_tmux, teardown);
+  g_test_add ("/mouse/native-edge-drag-autoscroll", Fixture, NULL, setup, native_edge_autoscroll, teardown);
+  g_test_add ("/mouse/native-bottom-edge-drag-autoscroll", Fixture, GUINT_TO_POINTER (1), setup, native_edge_autoscroll, teardown);
 #endif
   g_test_add ("/mouse/hyperlink-shortcuts", Fixture, GINT_TO_POINTER (1), setup, hyperlink_shortcuts, teardown);
   return g_test_run ();

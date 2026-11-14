@@ -21,6 +21,12 @@ gchar *
 terminal_tmux_retain_selection (pid_t client_pid, glong sx, glong sy,
                                glong ex, glong ey, gboolean rectangle);
 
+/* Continue a held drag, preserving the moving end and rectangle orientation. */
+gchar *
+terminal_tmux_begin_selection_drag (pid_t client_pid, glong sx, glong sy,
+                                   glong ex, glong ey, gboolean rectangle,
+                                   gboolean beginning, gboolean reverse);
+
 /* Clear only the native selection previously transferred to this pane. */
 void
 terminal_tmux_clear_native_selection (pid_t client_pid, const gchar *pane);

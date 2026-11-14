@@ -381,6 +381,14 @@ Scrolling never copies text. This handoff requires the fork's `select-range`
 copy-mode command; updating only the terminal or tmux client cannot add it to an
 already-running older server. Existing sessions are not restarted automatically.
 
+While dragging, reaching the first or last row scrolls and keeps extending the
+selection, even when the pointer stops moving. Moving back inside or releasing
+stops autoscroll. Plain terminal windows use VTE's native scroll timer; local
+tmux windows hand the exact anchor and held gesture to the rebuilt tmux server.
+This also preserves Ctrl-drag box orientation. Release only finishes the
+highlight: it does not copy or jump to the bottom. Horizontal selection on an
+edge row alone does not start autoscrolling.
+
 General > Clipboard has a "Prefer text selection when applications capture the
 mouse" option (`misc-prefer-mouse-selection`, disabled by default). When enabled,
 ordinary left dragging makes a terminal selection that can be copied with the

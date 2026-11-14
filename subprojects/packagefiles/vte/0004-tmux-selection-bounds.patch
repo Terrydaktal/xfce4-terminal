@@ -1,6 +1,6 @@
 --- a/src/vtegtk.cc
 +++ b/src/vtegtk.cc
-@@ -6649,6 +6649,45 @@
+@@ -6649,6 +6649,85 @@
          return false;
  }
  
@@ -8,19 +8,25 @@
 +_VTE_PUBLIC gboolean
 +vte_terminal_get_selection_bounds(VteTerminal* terminal, glong* sx, glong* sy,
 +                                  glong* ex, glong* ey, gboolean* rectangle) noexcept;
++_VTE_PUBLIC gboolean
++vte_terminal_get_selection_drag_bounds(VteTerminal* terminal, glong* sx, glong* sy,
++                                       glong* ex, glong* ey, gboolean* rectangle,
++                                       gboolean* beginning, gboolean* reverse) noexcept;
++_VTE_PUBLIC void
++vte_terminal_delegate_selection_drag(VteTerminal* terminal) noexcept;
 +}
 +
 +/* Private XFCE integration: exact cell boundaries, never a text search. Rows
 + * are relative to the visible viewport; the end column is exclusive. */
 +static gboolean
 +selection_bounds(VteTerminal* terminal, glong* sx, glong* sy,
-+                 glong* ex, glong* ey, gboolean* rectangle) noexcept
++                 glong* ex, glong* ey, gboolean* rectangle, bool dragging) noexcept
 +try
 +{
 +        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
 +        auto const impl = IMPL(terminal);
 +        auto const selection = impl->m_selection_resolved;
-+        if (impl->m_selecting || selection.empty())
++        if (impl->m_selecting != dragging || selection.empty())
 +                return false;
 +        auto const top = glong(impl->m_screen->scroll_delta);
 +        *sx = selection.start_column();
@@ -40,7 +46,41 @@
 +vte_terminal_get_selection_bounds(VteTerminal* terminal, glong* sx, glong* sy,
 +                                  glong* ex, glong* ey, gboolean* rectangle) noexcept
 +{
-+        return selection_bounds(terminal, sx, sy, ex, ey, rectangle);
++        return selection_bounds(terminal, sx, sy, ex, ey, rectangle, false);
++}
++
++gboolean
++vte_terminal_get_selection_drag_bounds(VteTerminal* terminal, glong* sx, glong* sy,
++                                       glong* ex, glong* ey, gboolean* rectangle,
++                                       gboolean* beginning, gboolean* reverse) noexcept
++{
++        if (!selection_bounds(terminal, sx, sy, ex, ey, rectangle, true))
++                return false;
++        auto const impl = IMPL(terminal);
++        *beginning = impl->m_selection_last < impl->m_selection_origin;
++        *reverse = *rectangle &&
++                ((impl->m_selection_last.halfcolumn() < impl->m_selection_origin.halfcolumn()) !=
++                 (impl->m_selection_last.row() < impl->m_selection_origin.row()));
++        return true;
++}
++
++void
++vte_terminal_delegate_selection_drag(VteTerminal* terminal) noexcept
++try
++{
++        g_return_if_fail(VTE_IS_TERMINAL(terminal));
++        auto const impl = IMPL(terminal);
++        impl->stop_autoscroll();
++        impl->m_selecting = false;
++        impl->m_will_select_after_threshold = false;
++        impl->m_mouse_handled_buttons &= ~1;
++        /* Keep the physical pressed-button bit: subsequent motion and release
++         * must reach the application, although the original press was local. */
++        impl->deselect_all();
++}
++catch (...)
++{
++        vte::log_exception();
 +}
 +
  /**
