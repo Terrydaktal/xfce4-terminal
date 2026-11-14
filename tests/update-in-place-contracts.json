@@ -131,15 +131,20 @@
     },
     {
       "id": "UPDATE-11",
-      "behavior": "Window-only updates pin the original native application image, including deleted builds, without copying or hashing executables. File identities validate the current and replacement images; private recovery records contain metadata, not persistent binary backups. Allowlisted colour and locale values survive without persisting arbitrary secrets.",
+      "behavior": "Update in Place pins and runs the latest installed supported application builds, including the tmux client, Codex and Fish return shell. Original images remain pinned during handover without copying or hashing. Selected paths and identities are revalidated before interruption; a changed or missing build refuses instead of silently retaining an outdated application. tmux protocol and attachment options are checked while its exact server/session and pane applications remain running. Recovery records contain metadata, not persistent binary backups. Allowlisted colour and locale values, including absent overrides, survive startup without persisting arbitrary secrets",
       "tests": [
-        "test_window_planning_uses_the_shared_adapter_and_pins_the_running_build",
+        "test_window_planning_uses_latest_build_and_retains_the_original_image",
+        "test_latest_native_images_are_pinned_for_fish_codex_and_tmux",
+        "test_window_launches_latest_client_and_preserves_server_panes_and_client_flags",
+        "test_incompatible_installed_client_is_refused_while_original_stays_attached",
+        "test_replaced_target_is_refused_even_though_its_pinned_image_survives",
         "test_capture_refuses_the_current_inode_without_reading_or_hashing",
         "test_terminal_environment_preserves_only_allowlisted_values_and_absence",
         "test_environment_values_and_absence_survive_the_generic_startup_gate",
         "test_pinned_execution_path_is_distinct_from_the_preserved_argv_zero",
         "test_malformed_generic_environment_is_rejected_before_execution",
         "terminal-update-wayland-codex",
+        "terminal-update-wayland-fish",
         "terminal-update-wayland-menu-compat"
       ]
     }

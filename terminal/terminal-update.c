@@ -484,8 +484,10 @@ prepare_done (GObject *source, GAsyncResult *result, gpointer data)
                                 _ ("Update in Place"));
           gtk_message_dialog_format_secondary_text (
             GTK_MESSAGE_DIALOG (update->dialog),
-            _ ("%s\n\nAll tabs will be replaced at the same position. tmux "
-                 "sessions stay running; other programs restart or resume. "
+            _ ("%s\n\nAll tabs will be replaced at the same position. The terminal "
+                 "and supported applications use the latest installed builds. "
+                 "tmux clients reconnect; their servers and pane applications "
+                 "stay running. Other programs restart or resume. "
                  "Scrollback, shell variables and unsaved/in-flight non-tmux "
                  "work are lost. "
                  "Non-tmux programs relaunch only after their originals exit. "

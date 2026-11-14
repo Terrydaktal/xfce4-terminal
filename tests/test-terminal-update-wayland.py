@@ -34,6 +34,18 @@ def wait_for(callback, seconds=10):
     raise RuntimeError(f"Timed out: {last}")
 
 
+def publish_new_build(path):
+    newer = path.with_name("newer-" + path.name)
+    shutil.copyfile(path, newer)
+    note = subprocess.check_output(["readelf", "-n", str(newer)], timeout=3).decode()
+    build_id = bytes.fromhex(re.search(r"Build ID: ([0-9a-f]+)", note).group(1))
+    contents = bytearray(newer.read_bytes())
+    contents[contents.index(build_id)] ^= 1
+    newer.write_bytes(contents)
+    newer.chmod(0o700)
+    newer.replace(path)
+
+
 def run_session(binary):
     import gi
     gi.require_version("Gio", "2.0")
@@ -81,14 +93,25 @@ def run_session(binary):
                 return True
             wait_for(lifecycle_ready)
             external_mode = os.environ.get("XFCE_LIFECYCLE_TEST_EXTERNAL") == "1"
+            lifecycle_source = Path(os.environ.get("XFCE_LIFECYCLE_SOURCE",
+                str(Path(daemon_binary).resolve().parents[2] / "src/lifecycle")))
+            modules = [("lifecycle_timing", "timing.py"), ("lifecycle_worker", "worker.py")]
             if external_mode:
-                lifecycle_source = Path(daemon_binary).resolve().parents[2] / "src/lifecycle"
-                for module_name, filename in (("lifecycle_worker", "worker.py"), ("lifecycle_window", "window.py"), ("lifecycle_external", "external.py")):
-                    spec = importlib.util.spec_from_file_location(module_name, lifecycle_source / filename)
-                    module = importlib.util.module_from_spec(spec)
-                    sys.modules[module_name] = module
-                    spec.loader.exec_module(module)
+                modules.extend([("lifecycle_window", "window.py"), ("lifecycle_external", "external.py")])
+            for module_name, filename in modules:
+                spec = importlib.util.spec_from_file_location(module_name, lifecycle_source / filename)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+            backend_worker = sys.modules["lifecycle_worker"]
+            if external_mode:
                 external = sys.modules["lifecycle_external"]
+            for name in ("tmux", "fish"):
+                source = shutil.which(name)
+                assert source, f"A real {name} executable is required"
+                target = root / "bin" / name
+                shutil.copyfile(source, target)
+                target.chmod(0o700)
             subprocess.run(["tmux", "-S", socket_path, "-f", "/dev/null", "new-session", "-d", "-s", "fixture",
                             "/bin/sleep 180"], check=True, timeout=5)
             pane = subprocess.check_output(["tmux", "-S", socket_path, "display-message", "-p", "-t", "fixture",
@@ -103,21 +126,23 @@ def run_session(binary):
             contents[contents.index(build_id)] ^= 1
             if external_mode and "XFCE_LIFECYCLE_TEST_LEGACY_BINARY" not in os.environ:
                 contents = contents.replace(b"GetUpdateStatus", b"OldUpdateStatus")
-            if os.environ.get("XFCE_LIFECYCLE_TEST_NO_TAB_API") == "1":
-                contents = contents.replace(b"ListTerminals", b"LostTerminals")
             if os.environ.get("XFCE_LIFECYCLE_TEST_NO_HOLD_API") == "1":
                 contents = contents.replace(b"HoldForUpdate", b"LostForUpdate")
+            if os.environ.get("XFCE_LIFECYCLE_TEST_NO_TAB_API") == "1":
+                contents = contents.replace(b"ListTerminals", b"LostTerminals")
             old.write_bytes(contents)
             old.chmod(0o700)
             environment = os.environ.copy()
             environment["XFCE4_TERMINAL_LAUNCH_PATH"] = str(binary)
             environment["XFCE4_TERMINAL_LAUNCH_KIND"] = "executable"
-            shell_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "shell"
+            fish_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "fish"
+            shell_mode = fish_mode or os.environ.get("XFCE_UPDATE_TEST_MODE") == "shell"
             title_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "titles"
             codex_mode = os.environ.get("XFCE_UPDATE_TEST_MODE") == "codex"
             multiple_tabs = shell_mode or title_mode
             titles = ["htop ~", "nvtop ~/literal-%D 'quoted'"]
-            command = shlex.join([shutil.which("bash"), "--noprofile", "--norc"] if shell_mode else
+            command = shlex.join([shutil.which("fish"), "--no-config"] if fish_mode else
+                                 [shutil.which("bash"), "--noprofile", "--norc"] if shell_mode else
                                  [shutil.which("tmux"), "-N", "-S", socket_path, "attach-session", "-t", "fixture"])
             tmux_shell = os.environ.get("XFCE_LIFECYCLE_TEST_TMUX_SHELL") == "1"
             if tmux_shell:
@@ -155,6 +180,7 @@ def run_session(binary):
                     program = root / name
                     shutil.copyfile(binary.parent.parent / "tests/application-monitor-child", program)
                     program.chmod(0o700)
+                    (root / "bin" / name).symlink_to(program)
                     title_commands.append(shlex.join([shutil.which("sh"), "-c",
                         'printf "\\033]2;%s\\007" "$1"; exec "$2"', "title-fixture", title, str(program)]))
                 command = title_commands[0]
@@ -205,15 +231,9 @@ def run_session(binary):
                 if os.environ.get("XFCE_LIFECYCLE_TEST_LATE_EXIT") == "1":
                     suspended_application = os.pidfd_open(original_codex_pid)
                     signal.pidfd_send_signal(suspended_application, signal.SIGSTOP)
-                newer = root / "bin/newer-codex"
-                shutil.copyfile(codex_binary, newer)
-                note = subprocess.check_output(["readelf", "-n", str(newer)], timeout=3).decode()
-                build_id = bytes.fromhex(re.search(r"Build ID: ([0-9a-f]+)", note).group(1))
-                contents = bytearray(newer.read_bytes())
-                contents[contents.index(build_id)] ^= 1
-                newer.write_bytes(contents)
-                newer.chmod(0o700)
-                newer.replace(codex_binary)
+                publish_new_build(codex_binary)
+            for name in ("tmux", "fish"):
+                publish_new_build(root / "bin" / name)
             def available():
                 status = json.loads(backend.call(owner, worker.TERMINAL_PATH, worker.TERMINAL_INTERFACE,
                     "GetUpdateStatus", "(s)", [window_uuid])[0])
@@ -334,6 +354,12 @@ def run_session(binary):
                 assert len(subprocess.check_output(["tmux", "-N", "-S", socket_path, "list-clients", "-F", "#{client_pid}"], timeout=3).splitlines()) == 1
             replacement_records = backend.records(backend.terminal_owner(replacement))
             assert len(replacement_records) == (2 if multiple_tabs else 1)
+            if fish_mode or not (shell_mode or title_mode or codex_mode):
+                name = "fish" if fish_mode else "tmux"
+                expected_image = os.stat(root / "bin" / name)
+                for record in replacement_records:
+                    _, active = backend_worker.foreground(record["child_pid"], record["foreground_pgid"])
+                    assert active["image"] == [expected_image.st_dev, expected_image.st_ino, expected_image.st_size, expected_image.st_mtime_ns], "The replacement application kept its old build"
             if multiple_tabs:
                 if external_mode: assert not (root / "confirmed").exists(), "A second terminal confirmation was shown"
                 else: assert (root / "confirmed").read_text() == "confirmed\n"
@@ -376,9 +402,10 @@ def run_session(binary):
                 arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
                 assert [os.fsdecode(arg) for arg in arguments[1:] if arg] == codex_arguments[1:]
                 with open(f"/proc/{pid}/exe", "rb") as stream:
-                    assert hashlib.file_digest(stream, "sha256").hexdigest() == original_codex_hash
+                    running_codex_hash = hashlib.file_digest(stream, "sha256").hexdigest()
                 with codex_binary.open("rb") as stream:
-                    assert hashlib.file_digest(stream, "sha256").hexdigest() != original_codex_hash
+                    assert hashlib.file_digest(stream, "sha256").hexdigest() == running_codex_hash
+                assert running_codex_hash != original_codex_hash
                 assert os.path.realpath(f"/proc/{pid}/cwd") == str(root)
                 if already_confirmed: assert not (root / "confirmed").exists(), "A second confirmation was shown"
                 else: assert (root / "confirmed").read_text() == "confirmed\n"
@@ -390,12 +417,13 @@ def run_session(binary):
                     assert len(records) == 1 and records[0]["child_pid"] == root_pid
                     executable = Path(os.readlink(f"/proc/{root_pid}/exe").removesuffix(" (deleted)"))
                     assert executable.name == "fish", "Codex quit without leaving Fish in the updated terminal"
+                    assert os.path.samestat(os.stat(f"/proc/{root_pid}/exe"), os.stat(root / "bin/fish")), "The Codex return shell kept its old Fish build"
                     assert not Path(f"/proc/{root_pid}/task/{root_pid}/children").read_text().strip(), "Fish has not reached its idle prompt"
                     assert os.path.realpath(f"/proc/{root_pid}/cwd") == str(root)
                     return records
                 wait_for(returned_to_fish)
                 placement_matches(saved, backend.kwin("capture", pid=replacement, id=actual["id"]), saved["minimized"])
-            print(json.dumps(dict(result="passed", transport="external" if external_mode else "native", mode="codex" if codex_mode else "titles" if title_mode else "shell" if shell_mode else "tmux", old_pid=original.pid, replacement_pid=replacement,
+            print(json.dumps(dict(result="passed", transport="external" if external_mode else "native", mode="codex" if codex_mode else "titles" if title_mode else "fish" if fish_mode else "shell" if shell_mode else "tmux", old_pid=original.pid, replacement_pid=replacement,
                                   geometry=actual["geometry"], tmux_pane_pid=pane)), flush=True)
         except Exception as error:
             failures.append(str(error))
@@ -408,14 +436,14 @@ def run_session(binary):
     GLib.timeout_add_seconds(100, lambda: (failures.append("overall deadline"), loop.quit(), False)[-1])
     loop.run()
     # Every signalled process and socket below was created in this private test session.
-    for pid in (replacement, helper_pid):
-        if pid:
-            try: os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError: pass
     if suspended_application is not None:
         try: signal.pidfd_send_signal(suspended_application, signal.SIGCONT)
         except ProcessLookupError: pass
         finally: os.close(suspended_application)
+    for pid in (replacement, helper_pid):
+        if pid:
+            try: os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError: pass
     if original is not None and original.poll() is None:
         original.terminate()
         original.wait(timeout=5)
@@ -469,9 +497,9 @@ def main():
         private_vte = binary.parent.parent / "subprojects/vte-0.84.1/src"
         if private_vte.is_dir():
             environment["LD_LIBRARY_PATH"] = str(private_vte) + ":" + environment.get("LD_LIBRARY_PATH", "")
-        if "--shell" in sys.argv or "--titles" in sys.argv or "--codex" in sys.argv:
+        if any(mode in sys.argv for mode in ("--shell", "--fish", "--titles", "--codex")):
             module = sys.argv[sys.argv.index("--confirm-module") + 1]
-            environment.update(XFCE_UPDATE_TEST_MODE="codex" if "--codex" in sys.argv else "titles" if "--titles" in sys.argv else "shell", GTK3_MODULES=str(Path(module).resolve()),
+            environment.update(XFCE_UPDATE_TEST_MODE="codex" if "--codex" in sys.argv else "titles" if "--titles" in sys.argv else "fish" if "--fish" in sys.argv else "shell", GTK3_MODULES=str(Path(module).resolve()),
                                XFCE_UPDATE_TEST_CONFIRM_LOG=str(root / "confirmed"))
         if "--restart-daemon" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_RESTART"] = "1"
@@ -483,14 +511,14 @@ def main():
             environment["XFCE_LIFECYCLE_TEST_LEGACY_BINARY"] = sys.argv[sys.argv.index("--legacy-binary") + 1]
         if "--without-tab-api" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_NO_TAB_API"] = "1"
-        if "--tmux-shell" in sys.argv:
-            environment["XFCE_LIFECYCLE_TEST_TMUX_SHELL"] = "1"
         if "--without-hold-api" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_NO_HOLD_API"] = "1"
-        if "--late-application-exit" in sys.argv:
-            environment["XFCE_LIFECYCLE_TEST_LATE_EXIT"] = "1"
         if "--codex-in-fish" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_CODEX_IN_FISH"] = "1"
+        if "--late-application-exit" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_LATE_EXIT"] = "1"
+        if "--tmux-shell" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_TMUX_SHELL"] = "1"
         if "--trace-worker" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_TRACE"] = "1"
         result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, "--session", str(binary)],

@@ -205,8 +205,10 @@ A temporary KWin script restores this window's placement and supported state;
 it installs no persistent script or shortcut. Drop-down terminals and windows
 whose saved normal geometry cannot be recovered are refused.
 
-Every tmux tab reattaches to its exact surviving server/session. The replacement
-is verified before the original closes, so programs inside tmux stay running.
+Every tmux tab launches the latest installed client and reattaches to its exact
+surviving server/session. Protocol compatibility and attachment options are checked
+before handover. The replacement is verified before the original closes, so the
+tmux server and programs inside tmux stay running; updating them is a separate action.
 For non-tmux tabs the startup helper restores the raw per-tab OSC title once,
 before executing the restarted program. This keeps shell-supplied titles such
 as `htop ~` and `nvtop ~` without copying the old window's `Terminal` build
@@ -227,13 +229,19 @@ transferred into a new terminal.
 The lifecycle backend saves private fsynced plans, journals and reports under
 `$XDG_STATE_HOME/applicationlauncher/lifecycle/<operation-id>/`. Each plan records
 exact process/session identities, placement, directories and literal argument
-arrays. Live launches pin the original native application image through an open
-descriptor, including a deleted build. Application images are not copied or hashed;
-file identity checks validate the terminal and the selected executable instead.
-Recovery records are private metadata, not persistent binary backups. An unlinked
-image cannot be recovered once its last process and descriptor holder exit.
-Existing recovery-image caches are left untouched. No process memory, loaded
-libraries, shell state or scrollback is captured.
+arrays. Live launches use open descriptors for the latest installed supported
+application executables. Fish, Codex, htop and nvtop restart on those builds;
+Codex resumes its exact conversation and returns to the latest installed Fish
+when it exits. Selected launch paths and file identities are rechecked after
+confirmation and before interruption. Original executable images, including
+deleted builds, stay pinned during handover for recovery. Neither native nor
+compatibility updates copy or hash
+executables. Recovery records are metadata, not binary backups: an unlinked
+image cannot be recovered after its last process and descriptor holder exit.
+Existing recovery-image caches are left untouched.
+Recovery records identify the selected and original builds; descriptor paths are
+usable only while their holder survives. These do not capture process memory,
+loaded libraries or shell state.
 Terminal helper logs and `.status.json` reports remain under
 `$XDG_STATE_HOME/xfce4-terminal/updates/`. Existing launcher snapshots are not deleted.
 The replacement starts minimized. Its binary, tab identities, startup gates and
