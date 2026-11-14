@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "basis": "Manually classified completed full-stack reconstructions from retained local reflogs and commit objects, not a count of non-fast-forward pushes. Initial historical seeds are incomplete lifetime evidence.",
+  "unknown_updates": [],
+  "confirmed_updates": [
+    {
+      "old": "6adf8d7b0bc7b35317a79ee5155c1de4d12a1966",
+      "new": "b94f469004fce1e89e2762c9605863023cda13d3",
+      "timestamp": 1790780097,
+      "ref": "refs/remotes/github/main",
+      "remote": "https://github.com/Terrydaktal/xfce4-terminal.git"
+    },
+    {
+      "old": "b94f469004fce1e89e2762c9605863023cda13d3",
+      "new": "c21296d73afec8cf3fa2a0de241a67b250c27629",
+      "timestamp": 1790863904,
+      "ref": "refs/remotes/github/main",
+      "remote": "https://github.com/Terrydaktal/xfce4-terminal.git"
+    }
+  ],
+  "fork_remotes": {
+    "github": "https://github.com/Terrydaktal/xfce4-terminal.git"
+  },
+  "initial_history_rewrites": 2,
+  "initial_rebases": 1,
+  "events": [],
+  "format": "UPSTREAM-forkREBASES.HISTORY_REWRITES.COMMITS-BUILD",
+  "historical_rebase_count_is_complete": false,
+  "rebase_count_basis": "One completed upstream rebase on 2026-06-17: verified start, pick and finish records, and a move from 9ff58f58c8b7e879b01e78c7c7a3a7a3ed713c72 to 21f0b5f27401e8b6b6355bc04d965a46da737c14. Both upstream versions were 1.2.0-dev. Duplicate HEAD/main records count once.",
+  "rebase_evidence": [
+    {
+      "kind": "completed-upstream-rebase",
+      "timestamp": 1781720019,
+      "old_head": "987c5a188e9a0da08f14999ce52a9c88888910b5",
+      "new_base": "21f0b5f27401e8b6b6355bc04d965a46da737c14",
+      "new_head": "a7f57977bc0aa36bf4768d8536fb1385eb48a84d",
+      "evidence": "HEAD reflog: rebase (start) onto github/master followed by rebase (finish), 2026-06-17"
+    }
+  ],
+  "history_rewrite_count_is_complete": false,
+  "history_rewrite_evidence": [
+    {
+      "old": "6adf8d7b0bc7b35317a79ee5155c1de4d12a1966",
+      "new": "b94f469004fce1e89e2762c9605863023cda13d3",
+      "timestamp": 1790778598,
+      "utc": "2026-09-30T14:29:58+00:00",
+      "message": "Rebuild fork as 33 verified feature commits",
+      "old_fork_count": 3,
+      "new_fork_count": 33,
+      "first_fork_changed": true,
+      "common_ancestor": "21f0b5f27401e8b6b6355bc04d965a46da737c14",
+      "evidence": "retained HEAD/main reflogs and surviving old/new commit objects",
+      "counted_in": "initial_history_rewrites"
+    },
+    {
+      "old": "b94f469004fce1e89e2762c9605863023cda13d3",
+      "new": "c21296d73afec8cf3fa2a0de241a67b250c27629",
+      "timestamp": 1790862648,
+      "utc": "2026-10-01T13:50:48+00:00",
+      "message": "Explain 33 fork commits and add two verified Copy commits",
+      "old_fork_count": 33,
+      "new_fork_count": 35,
+      "first_fork_changed": true,
+      "common_ancestor": "21f0b5f27401e8b6b6355bc04d965a46da737c14",
+      "evidence": "retained HEAD/main reflogs and surviving old/new commit objects",
+      "counted_in": "initial_history_rewrites"
+    }
+  ],
+  "excluded_rewrite_observations": [],
+  "seed_audit": {
+    "reviewed_at": "2026-11-09T15:23:35.334310+00:00",
+    "previous_version_input": "1.2.0-fork1.2.0",
+    "corrected_version_input": "1.2.0-fork1.2.0",
+    "policies": {
+      "upstream_rebases": "Manually record a completed move or port to a different upstream base. Initial imports/clones and same-base history repairs do not count.",
+      "full_history_rewrites": "Manually record a deliberate completed reconstruction of the whole fork stack, including local reconstructions not yet pushed. A single-commit amendment or a suffix-only rewrite does not count. Replaying descendants is not by itself evidence of another reconstruction.",
+      "automatic_fields": "Derive COMMITS from the current first-parent stack after FORK-BASE; reserve BUILD per full source commit, starting at zero, under a shared lock.",
+      "automation": "No rebase/push hooks or reflog heuristics increment either manual counter. Repeated pushes and failed pushes do not count as additional reconstructions."
+    },
+    "oldest_retained_reflog": "2026-03-26T20:46:54+00:00",
+    "retained_reflog_records": 73,
+    "limits": "Expired logs, deleted repositories and unavailable past source cannot be recovered by this audit. Local reconstruction events and remote publication observations are not double counted."
+  }
+}

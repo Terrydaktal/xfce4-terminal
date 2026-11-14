@@ -1,5 +1,6 @@
 """Private Git/Meson fixtures; never build or restart a user's terminal window."""
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -21,6 +22,8 @@ class ForkVersionTests(unittest.TestCase):
         for script in ROOT.joinpath("scripts").glob("*.sh"):
             shutil.copyfile(script, self.repo / "scripts" / script.name)
         shutil.copyfile(ROOT / "xfce-revision.h.in", self.repo / "xfce-revision.h.in")
+        for script in ROOT.joinpath("scripts").glob("*.py"):
+            shutil.copyfile(script, self.repo / "scripts" / script.name)
         (self.repo / "FORK-VERSION").write_text("1.2.0-fork0.0.0\n")
         shutil.copyfile(ROOT / ".gitignore", self.repo / ".gitignore")
         self.environment = os.environ.copy()
@@ -75,8 +78,8 @@ class ForkVersionTests(unittest.TestCase):
         before = self.git("status", "--porcelain=v1").stdout
         for number in range(2):
             header, result = self.generate()
-            self.assertEqual(result.stdout, f"1.2.0-fork0.0.2-{number}\n")
-            self.assert_version(header, f"1.2.0-fork0.0.2-{number}")
+            self.assertEqual(result.stdout, f"1.2.0-fork0.0.1-{number}\n")
+            self.assert_version(header, f"1.2.0-fork0.0.1-{number}")
             self.assertEqual((header.parent / "BUILD-ID").read_text(), f"{number}\n")
             self.assertEqual(
                 (header.parent / "SOURCE-COMMIT").read_text(),
@@ -87,36 +90,24 @@ class ForkVersionTests(unittest.TestCase):
     def test_commits_advance_release_and_dirty_is_only_diagnostic(self):
         (self.repo / "payload").write_text("Uncommitted fixture source\n")
         header, _ = self.generate()
-        self.assert_version(header, "1.2.0-fork0.0.2-0")
+        self.assert_version(header, "1.2.0-fork0.0.1-0")
         self.assertTrue(
             (header.parent / "SOURCE-VERSION").read_text().endswith(".dirty\n")
         )
         self.git("add", ".")
         self.git("commit", "-qm", "Next fork revision")
         header, _ = self.generate()
-        self.assert_version(header, "1.2.0-fork0.0.3-1")
+        self.assert_version(header, "1.2.0-fork0.0.2-0")
 
-    def test_decimal_carry_and_git_free_export(self):
-        cases = [
-            ("0.0.7", "0.0.9"),
-            ("0.0.8", "0.1.0"),
-            ("0.1.6", "0.1.8"),
-            ("0.2.0", "0.2.2"),
-            ("0.3.9", "0.4.1"),
-            ("0.9.8", "1.0.0"),
-            ("9.9.8", "10.0.0"),
-        ]
-        for number, (base, expected) in enumerate(cases):
-            with self.subTest(base=base):
-                (self.repo / "FORK-VERSION").write_text(f"1.2.0-fork{base}\n")
-                header, _ = self.generate()
-                self.assert_version(header, f"1.2.0-fork{expected}-{number}")
-                exported = self.directory / f"export-{number}"
-                self.run_command(
-                    "bash", self.repo / "scripts/source-snapshot.sh", exported
-                )
-                header, _ = self.generate(root=exported)
-                self.assert_version(header, f"1.2.0-fork{expected}-0")
+    def test_explicit_counters_survive_git_free_export(self):
+        for number, generation in enumerate((0, 1, 12)):
+            (self.repo / "FORK-VERSION").write_text(f"1.2.0-fork0.{generation}.0\n")
+            header, _ = self.generate()
+            self.assert_version(header, f"1.2.0-fork0.{generation}.1-{number}")
+            exported = self.directory / f"export-{generation}"
+            self.run_command("bash", self.repo / "scripts/source-snapshot.sh", exported)
+            header, _ = self.generate(root=exported)
+            self.assert_version(header, f"1.2.0-fork0.{generation}.1-0")
 
     def test_parallel_build_directories_have_distinct_numbers(self):
         with ThreadPoolExecutor(max_workers=8) as workers:
@@ -125,7 +116,7 @@ class ForkVersionTests(unittest.TestCase):
             )
         self.assertEqual(
             {result.stdout.strip() for _, result in results},
-            {f"1.2.0-fork0.0.2-{number}" for number in range(8)},
+            {f"1.2.0-fork0.0.1-{number}" for number in range(8)},
         )
         for header, result in results:
             self.assert_version(header, result.stdout.strip())
@@ -151,18 +142,14 @@ class ForkVersionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(header.exists())
 
-    def test_manual_bumps_carry(self):
-        for before, part, after in [
-            ("0.0.9", "patch", "0.1.0"),
-            ("0.9.9", "patch", "1.0.0"),
-            ("0.9.8", "minor", "1.0.0"),
-        ]:
-            with self.subTest(before=before, part=part):
-                (self.repo / "FORK-VERSION").write_text(f"1.2.0-fork{before}\n")
-                result = self.run_command(
-                    "bash", self.repo / "scripts/bump-version.sh", part
-                )
-                self.assertEqual(result.stdout, f"1.2.0-fork{after}\n")
+    def test_only_explicit_whole_history_bumps_are_accepted(self):
+        before = self.git("rev-parse", "HEAD").stdout
+        result = self.run_command("bash", self.repo / "scripts/bump-version.sh", "history")
+        self.assertEqual(result.stdout, "1.2.0-fork0.1.0\n")
+        self.assertEqual(self.git("rev-parse", "HEAD").stdout, before)
+        for part in ("patch", "minor"):
+            rejected = self.run_command("bash", self.repo / "scripts/bump-version.sh", part, check=False)
+            self.assertNotEqual(rejected.returncode, 0)
 
     def test_normal_meson_rebuilds_get_new_versions_without_reconfigure(self):
         if not shutil.which("meson") or not shutil.which("ninja"):
@@ -183,16 +170,21 @@ class ForkVersionTests(unittest.TestCase):
         for number in range(2):
             self.run_command("meson", "compile", "-C", build)
             result = self.run_command(build / "version-probe")
-            self.assertEqual(result.stdout, f"1.2.0-fork0.0.2-{number}\n")
+            self.assertEqual(result.stdout, f"1.2.0-fork0.0.1-{number}\n")
         self.run_command("ninja", "-C", build, "-n")
         self.assertEqual((self.repo / "build/build-number").read_text(), "2\n")
         self.git("add", ".")
         self.git("commit", "-qm", "Record Meson fixture")
         self.run_command("meson", "compile", "-C", build)
         self.assertEqual(
-            self.run_command(build / "version-probe").stdout, "1.2.0-fork0.0.3-2\n"
+            self.run_command(build / "version-probe").stdout, "1.2.0-fork0.0.2-0\n"
         )
 
+
+_history_spec = importlib.util.spec_from_file_location("history_contracts", Path(__file__).with_name("test-history-versioning.py"))
+_history_contracts = importlib.util.module_from_spec(_history_spec)
+_history_spec.loader.exec_module(_history_contracts)
+HistoryVersionTests = _history_contracts.HistoryVersionTests
 
 if __name__ == "__main__":
     unittest.main()

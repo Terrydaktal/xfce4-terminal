@@ -21,3 +21,7 @@ __pycache__/
 # Local coding-agent state is not part of the terminal source.
 /.agents/
 /.codex
+
+# Generated fork provenance and Python bytecode.
+/SOURCE-VERSION.json
+/BUILD-VERSION.json

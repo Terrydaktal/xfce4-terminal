@@ -1,25 +1,39 @@
 {
   "schema_version": 1,
-  "scope": "Commit-derived decimal fork releases and per-build numeric identities",
+  "scope": "Independent upstream-rebase and whole-history-rewrite counters, unbounded fork commit counts, and amendment-safe build identities",
   "contracts": [
     {
       "id": "VERSION-01",
-      "behavior": "Count first-parent fork commits inclusively from FORK-BASE, add the manual base offset and carry patch/minor at ten; 41 commits produce 0.4.1. Preserve canonical revision and full commit provenance through Git-free exports.",
+      "behavior": "UPSTREAM-forkREBASES.HISTORY_REWRITES.COMMITS-BUILD keeps independent explicit rebase/rewrite counts, excludes upstream from the full first-parent commit count, never carries or caps that count, preserves Git-free provenance and records validated upgrade/rewrite events without changing HEAD.",
       "tests": [
-        "test_commits_advance_release_and_dirty_is_only_diagnostic",
-        "test_decimal_carry_and_git_free_export",
-        "test_missing_export_provenance_is_not_replaced_by_unknown_version",
-        "test_manual_bumps_carry"
+        "test_count_excludes_upstream_and_queries_are_read_only",
+        "test_commit_count_has_no_decimal_carry_or_fixed_ceiling",
+        "test_source_commit_100_does_not_increment_either_history_counter",
+        "test_rebase_and_history_rewrite_counters_are_independent",
+        "test_recording_the_same_upstream_upgrade_twice_is_rejected",
+        "test_rebase_rejects_non_first_parent_boundaries_before_writing",
+        "test_corrupt_history_ledger_is_not_replaced",
+        "test_explicit_counters_survive_git_free_export"
       ]
     },
     {
       "id": "VERSION-02",
-      "behavior": "Each normal Meson terminal build allocates a new locked, atomic local build number, including unchanged-source builds and later commits without reconfiguration. Independent build directories share a repository counter. Dry runs do not allocate; invalid counters cannot replace a generated header.",
+      "behavior": "Each native build reserves a locked per-source-commit number; new commits and amendments reset to zero while dirty edits and label-only changes continue. Parallel output directories share state; corrupt counters cannot publish a replacement header. Dry runs allocate nothing.",
       "tests": [
         "test_rebuilds_increment_without_changing_tracked_sources",
         "test_parallel_build_directories_have_distinct_numbers",
         "test_bad_counter_does_not_replace_header",
-        "test_normal_meson_rebuilds_get_new_versions_without_reconfigure"
+        "test_normal_meson_rebuilds_get_new_versions_without_reconfigure",
+        "test_new_commit_resets_build_counter",
+        "test_amend_equivalent_keeps_commit_count_but_resets_builds",
+        "test_dirty_rebuilds_keep_the_same_commit_build_sequence",
+        "test_returning_to_an_earlier_commit_retains_its_build_sequence",
+        "test_unattributed_version_only_counts_do_not_leak_into_a_new_commit",
+        "test_proven_legacy_labels_for_one_commit_share_a_build_sequence",
+        "test_conflicting_legacy_commit_provenance_is_rejected",
+        "test_corrupt_commit_scoped_state_is_not_silently_reset",
+        "test_corrupt_scoped_state_is_not_silently_reset",
+        "test_existing_scoped_build_numbers_are_preserved"
       ]
     },
     {
@@ -27,8 +41,8 @@
       "behavior": "CLI, About and read-only tmux-mosh inventory report UPSTREAM-forkX.Y.Z-N without hashes, dirty text or a second binary hash suffix. Preserve GNU ELF build IDs for local stale-build checks. Rebuilds do not restart existing desktop windows.",
       "tests": [
         "private Xvfb --version probes",
-        "tmux/tests/test_frontend_build_versions.py",
-        "tmux/tests/test_entry_versions.py",
+        "~/Dev/tmux-mosh/tests/test_frontend_build_versions.py",
+        "~/Dev/tmux-mosh/tests/test_entry_versions.py",
         "Meson terminal-build-monitor and isolated input/clipboard suites"
       ]
     }
@@ -36,13 +50,14 @@
   "test_owners": {
     "versioning": "tests/test-fork-version.py",
     "generation": "scripts/generate-build-header.sh",
-    "inventory": "../tmux/tests/test_frontend_build_versions.py"
+    "history_versioning": "tests/test-history-versioning.py",
+    "inventory": "~/Dev/tmux-mosh/tests/test_frontend_build_versions.py"
   },
   "environments": {
     "versioning": "Private Git main histories, temporary Meson builds and parallel isolated output directories",
     "automated_gui": "Private HOME/XDG runtime/config/cache/data, Xvfb and D-Bus; no user windows restarted"
   },
-  "verification": {
+  "previous_scheme_verification": {
     "date": "2026-10-23T15:09:57+01:00",
     "version": "1.2.0-fork0.4.1-1",
     "source_commit": "b3149143914370fba841044daa5cf38725f5ab43",
@@ -61,6 +76,7 @@
     "shfmt": "passed",
     "ruff": "passed",
     "evidence": "/home/lewis/repos/xfce4-terminal/build/fork-version.irQDMH",
-    "activation": "Existing ~/.local/bin symlink resolves to rebuilt build/terminal/xfce4-terminal. No user windows or tmux/Mosh sessions restarted; no commits or pushes."
+    "activation": "Existing ~/.local/bin symlink resolves to rebuilt build/terminal/xfce4-terminal. No user windows or tmux/Mosh sessions restarted; no commits or pushes.",
+    "note": "Preserved historical evidence for the superseded decimal/cumulative scheme, not a current verification claim."
   }
 }

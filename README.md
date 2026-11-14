@@ -78,44 +78,24 @@ used below; direct executable launches do not require that metadata.
 
 ### Fork Versions
 
-The terminal's `--version`, About dialog and `tmux-mosh clients` use versions such
-as `1.2.0-fork0.4.1-0`, with no Git hash or dirty marker in the public version.
-`FORK-VERSION` holds the manual base, `1.2.0-fork0.0.0`; `FORK-BASE` pins the first
-fork commit. First-parent fork commits count inclusively, excluding older or
-merged upstream history. Treat `X.Y.Z` as `100*X + 10*Y + Z`, add the commit count,
-and carry minor/patch digits at ten. The 41 fork commits at this migration therefore
-produce `0.4.1`; `0.0.9` becomes `0.1.0`, and `0.9.9` becomes `1.0.0`.
+Public versions use `UPSTREAM-forkREBASES.HISTORY_REWRITES.COMMITS-BUILD`,
+for example `1.2.0-fork1.2.57-0`. Rebases/upstream ports and deliberate whole-history
+rewrites have separate explicit counters; amendments increment neither. The last
+field is the complete first-parent fork commit count after the excluded upstream
+`FORK-BASE`, without decimal carry or a 99/999 limit. `FORK-HISTORY.json` records
+the best-effort historical seeds and future explicit events.
 
-Normal `meson compile -C build` builds generate a new numeric suffix, starting at
-`-0`, then `-1`, `-2`, and so on, even when the source is unchanged. The ignored
-`build/build-number` counter is locked and updated atomically. Separate build
-directories share this repository counter; `BUILD_COUNTER_FILE=/absolute/path`
-can select another persistent counter. Failed attempts can leave gaps. A new
-commit advances the fork revision without resetting the build counter; Meson
-does not need manual reconfiguration to see it. `meson setup` and dry runs do not
-allocate build numbers. Use `meson test -C build --no-rebuild` to test the existing
-artifact without creating another build.
+`bash scripts/bump-version.sh rebase --base COMMIT --upstream VERSION` records
+a completed upstream upgrade. `bash scripts/bump-version.sh history` records a
+whole-history reconstruction. Neither performs Git history operations or commits.
+Normal Meson builds refresh the compiled label and reserve a locked, revision-
+scoped build number; each new commit hash, including an amendment, starts at zero.
+Dirty rebuilds keep the same commit's sequence. Existing counters are preserved.
+Configuration, dry runs and
+`meson test --no-rebuild` allocate nothing; existing processes are not restarted.
 
-`scripts/source-version.sh` reads Git history or exported provenance;
-`scripts/build-version.sh` reserves a build number and writes `BUILD-VERSION`,
-`BUILD-ID`, `SOURCE-VERSION` and `SOURCE-COMMIT` in the selected build directory.
-`scripts/generate-build-header.sh` turns those values and `xfce-revision.h.in`
-into the generated version header. Meson runs it once per terminal build, then
-recompiles the version consumers. The upstream Meson project version remains the
-compatibility base; `VERSION_FULL` is the public compiled fork/build version.
-The full commit and diagnostic dirty state remain in source metadata, not the
-displayed version. GNU ELF build IDs remain available for outdated-build checks.
-
-`bash scripts/bump-version.sh [patch|minor|major]` deliberately advances the manual
-base with the same carry rules; normal builds do not edit it. For a Git-free
-source export, run `bash scripts/source-snapshot.sh DESTINATION` before packaging.
-That preserves the source file manifest, input checksums and revision provenance;
-the exported source generates its own build numbers. Build scripts never commit,
-push, change launcher links or restart existing terminal windows.
-
-`python3 tests/test-fork-version.py` checks numbering, carry, parallel counters,
-failure handling, source exports and actual incremental Meson builds in private
-temporary fixtures. The same suite is registered as Meson's `fork-versioning` test.
+See [FORK-VERSIONING.md](FORK-VERSIONING.md) for metadata, ledger, build state,
+Git-free exports and regression coverage.
 
 ### Outdated Running Builds
 
