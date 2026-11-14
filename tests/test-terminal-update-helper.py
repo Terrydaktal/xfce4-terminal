@@ -1,6 +1,7 @@
 """Isolated transaction tests: no desktop session or user window is touched."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -45,6 +46,20 @@ class LayoutTests(unittest.TestCase):
         core.verify_binary(os.getpid(), (metadata.st_dev, metadata.st_ino))
         with self.assertRaises(processes.UpdateError):
             core.verify_binary(os.getpid(), (metadata.st_dev, metadata.st_ino + 1))
+
+    def test_capture_refuses_the_current_inode_without_reading_or_hashing(self):
+        binary = str(Path("/proc/self/exe").resolve())
+        request = dict(owner_pid=os.getpid(), owner_bus="old", window_uuid="window",
+                       executable=binary, launch_path=binary, launch_kind="executable")
+        job = core.Replacement(request, Backend(), str(SOURCE / "terminal-update-helper.py"))
+        try:
+            with patch("builtins.open", side_effect=AssertionError("Read executable contents")), \
+                    patch.object(core, "identity", return_value=dict(pid=os.getpid(), start=1, exe=binary)), \
+                    patch.object(hashlib, "file_digest", side_effect=AssertionError("Hashed executable")):
+                with self.assertRaisesRegex(processes.UpdateError, "already runs the current"):
+                    job.capture()
+        finally:
+            job.cleanup()
 
     def test_launch_entry_retargeting_is_observable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -324,7 +339,7 @@ class ReplacementTests(unittest.TestCase):
             binary = Path(directory) / "xfce4-terminal"
             shutil.copyfile("/bin/true", binary)
             binary.chmod(0o700)
-            request = dict(owner_pid=123, owner_bus="old", window_uuid="window", window_title="Terminal",
+            request = dict(owner_pid=os.getpid(), owner_bus="old", window_uuid="window", window_title="Terminal",
                            executable=str(binary), launch_path=str(binary), launch_kind="executable", job_id="job", service="job-service")
             tab = dict(argv=["/bin/true"], cwd="/tmp", active=True, title="literal %D")
             ticks = iter(range(1, 1000))
@@ -340,8 +355,11 @@ class ReplacementTests(unittest.TestCase):
                 def poll(self): return 1 if fault == "exit" else None
                 def terminate(self): backend.events.append("discard-replacement")
             job = core.Replacement(request, backend, str(SOURCE / "terminal-update-helper.py"))
-            with patch.object(core, "identity", return_value=dict(pid=123, start=1, exe="old")), \
-                 patch.object(core, "digest", side_effect=lambda path: "old" if str(path).startswith("/proc/") else "new"), \
+            with patch.object(core, "identity", return_value=dict(pid=os.getpid(), start=1, exe="old")), \
+                 patch.object(hashlib, "file_digest", side_effect=AssertionError("Hashed executable")), \
+                 patch.object(hashlib, "sha256", side_effect=AssertionError("Hashed executable")), \
+                 patch.object(shutil, "copyfile", side_effect=AssertionError("Copied executable")), \
+                 patch.object(shutil, "copyfileobj", side_effect=AssertionError("Copied executable")), \
                  patch.object(core, "verify_binary"), \
                  patch.object(core, "alive", side_effect=lambda saved: not backend.closed), \
                  patch.object(core, "StartupGates", Gates), \

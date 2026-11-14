@@ -227,12 +227,13 @@ transferred into a new terminal.
 The lifecycle backend saves private fsynced plans, journals and reports under
 `$XDG_STATE_HOME/applicationlauncher/lifecycle/<operation-id>/`. Each plan records
 exact process/session identities, placement, directories and literal argument
-arrays. Content-addressed native recovery images are retained under
-`applicationlauncher/lifecycle/builds/`, bounded to 1 GiB per image. Live launches
-use an open descriptor for the original application's executable, including a
-deleted build; terminal-only updates do not silently upgrade the applications.
-Recovery arguments use the retained images and remain usable after the worker
-exits. These do not capture process memory, loaded libraries or shell state.
+arrays. Live launches pin the original native application image through an open
+descriptor, including a deleted build. Application images are not copied or hashed;
+file identity checks validate the terminal and the selected executable instead.
+Recovery records are private metadata, not persistent binary backups. An unlinked
+image cannot be recovered once its last process and descriptor holder exit.
+Existing recovery-image caches are left untouched. No process memory, loaded
+libraries, shell state or scrollback is captured.
 Terminal helper logs and `.status.json` reports remain under
 `$XDG_STATE_HOME/xfce4-terminal/updates/`. Existing launcher snapshots are not deleted.
 The replacement starts minimized. Its binary, tab identities, startup gates and

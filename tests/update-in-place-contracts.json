@@ -119,9 +119,10 @@
     },
     {
       "id": "UPDATE-11",
-      "behavior": "Window-only updates preserve the running native application image, including deleted builds, and retain durable private recovery executables; individual program updates may choose the latest installed image. Allowlisted colour and locale values, including absent overrides, survive startup without persisting arbitrary secrets",
+      "behavior": "Window-only updates pin the original native application image, including deleted builds, without copying or hashing executables. File identities validate the current and replacement images; private recovery records contain metadata, not persistent binary backups. Allowlisted colour and locale values survive without persisting arbitrary secrets.",
       "tests": [
         "test_window_planning_uses_the_shared_adapter_and_pins_the_running_build",
+        "test_capture_refuses_the_current_inode_without_reading_or_hashing",
         "test_terminal_environment_preserves_only_allowlisted_values_and_absence",
         "test_environment_values_and_absence_survive_the_generic_startup_gate",
         "test_pinned_execution_path_is_distinct_from_the_preserved_argv_zero",

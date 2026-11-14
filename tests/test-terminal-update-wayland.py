@@ -275,6 +275,15 @@ def run_session(binary):
                     assert report["phase"] == "complete", report
                     return report
                 wait_for(recovered_report)
+            lifecycle_state = root / "state/applicationlauncher/lifecycle"
+            plans = list(lifecycle_state.glob("*/restart-plan.json"))
+            assert len(plans) == 1, "The update did not retain its metadata-only restart plan"
+            plan = json.loads(plans[0].read_text())
+            assert plan["image_retention"] == "Open descriptors during handover only; no executable backups"
+            assert not (lifecycle_state / "builds").exists(), "The update archived executable contents"
+            for tab in plan["tabs"]:
+                assert "recovery_argv" not in tab and "recovery_build_sha256" not in tab
+                assert "recovery_executable" not in tab.get("return_shell", {})
             original.wait(timeout=5)
             actual = backend.kwin("capture", pid=replacement, id=last["replacement_window_id"])
             placement_matches(saved, actual, saved["minimized"])

@@ -1,6 +1,5 @@
 """Application-agnostic terminal staging, PTY gates and window handover mechanics."""
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,11 +14,6 @@ import termios
 import time
 
 from processes import UpdateError, alive, identity, same_tabs
-
-
-def digest(path):
-    with open(path, "rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def verify_binary(pid, expected):
@@ -196,7 +190,7 @@ class Replacement:
         metadata = os.fstat(self.descriptor)
         if not stat.S_ISREG(metadata.st_mode) or os.pread(self.descriptor, 4, 0) != b"\x7fELF":
             raise UpdateError("The replacement is not a native terminal executable")
-        if digest(binary) == digest(f"/proc/{owner['pid']}/exe"):
+        if os.path.samestat(metadata, os.stat(f"/proc/{owner['pid']}/exe")):
             raise UpdateError("This terminal already runs the current build")
         saved = self.backend.kwin("capture", pid=owner["pid"], title=request["window_title"])
         exact_output(saved.get("output"), saved.get("output"))
