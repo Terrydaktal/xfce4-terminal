@@ -84,6 +84,11 @@ update_unref (gpointer data)
   if (!g_atomic_ref_count_dec (&update->refs))
     return;
   cancel_helper (update);
+  /* An interrupted child may exit after the helper has reported failure. Keep
+   * that recovery tab open, but restore input when releasing the pending update. */
+  if (update->held_screens != NULL && !update->handoff)
+    for (guint i = 0; i < update->held_screens->len; i++)
+      ((HeldScreen *) g_ptr_array_index (update->held_screens, i))->hold = TRUE;
   g_clear_pointer (&update->held_screens, g_ptr_array_unref);
   g_object_set_data (G_OBJECT (update->window), PENDING_KEY, NULL);
   if (g_signal_handler_is_connected (update->window, update->destroy_id))

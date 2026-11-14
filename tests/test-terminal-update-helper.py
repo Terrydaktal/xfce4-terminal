@@ -332,6 +332,25 @@ class Backend:
 
 
 class ReplacementTests(unittest.TestCase):
+    def test_interrupted_recovery_keeps_original_hold_until_native_cleanup(self):
+        for preserve in (True, False):
+            with self.subTest(preserve=preserve):
+                backend = Backend()
+                job = core.Replacement({}, backend, "unused")
+                job.replacement = Mock()
+                job.replacement.poll.return_value = None
+                self.assertEqual(job.recover(preserve_original=preserve), dict(original_closed=False))
+                job.replacement.terminate.assert_called_once()
+                self.assertEqual("unhold" in backend.events, not preserve)
+
+    def test_recover_and_discard_have_distinct_window_hold_policies(self):
+        for action, preserve in (("Recover", True), ("Discard", False)):
+            with self.subTest(action=action):
+                backend = mechanics.Backend.__new__(mechanics.Backend)
+                backend.replacement = Mock()
+                backend.operate(action, {})
+                backend.replacement.recover.assert_called_once_with(preserve_original=preserve)
+
     def run_staging(self, fault=None):
         backend = Backend()
         backend.fault = fault

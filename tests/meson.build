@@ -182,6 +182,10 @@ if kwin_test.found()
     args: [files('test-terminal-update-wayland.py'), '--codex', '--confirm-module',
            update_confirm_module.full_path(), terminal_executable.full_path()],
     depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
+  test('terminal-update-wayland-late-application-exit', find_program('python3'),
+    args: [files('test-terminal-update-wayland.py'), '--codex', '--late-application-exit', '--confirm-module',
+           update_confirm_module.full_path(), terminal_executable.full_path()],
+    depends: [terminal_executable, update_confirm_module], timeout: 120, is_parallel: false)
   test('terminal-update-wayland-confirmed-daemon-restart', find_program('python3'),
     args: [files('test-terminal-update-wayland.py'), '--codex', '--confirmed', '--restart-daemon', '--confirm-module',
            update_confirm_module.full_path(), terminal_executable.full_path()],

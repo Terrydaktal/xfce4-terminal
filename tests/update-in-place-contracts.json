@@ -118,6 +118,15 @@
       ]
     },
     {
+      "id": "UPDATE-12",
+      "behavior": "A failed interrupted native update keeps the original tab open with input restored, including child exit after helper cleanup; cancellation before interruption restores the original hold policy.",
+      "tests": [
+        "test_interrupted_recovery_keeps_original_hold_until_native_cleanup",
+        "test_recover_and_discard_have_distinct_window_hold_policies",
+        "terminal-update-wayland-late-application-exit"
+      ]
+    },
+    {
       "id": "UPDATE-11",
       "behavior": "Window-only updates pin the original native application image, including deleted builds, without copying or hashing executables. File identities validate the current and replacement images; private recovery records contain metadata, not persistent binary backups. Allowlisted colour and locale values survive without persisting arbitrary secrets.",
       "tests": [

@@ -53,14 +53,14 @@ def run_session(binary):
         raise RuntimeError("The shared lifecycle integration requires applicationlauncherd")
     daemon = subprocess.Popen([daemon_binary], stdout=daemon_log, stderr=daemon_log)
     original = None
-    replacement = helper_pid = None
+    replacement = helper_pid = suspended_application = None
     socket_path = str(root / "tmux.socket")
     backend = None
     failures = []
     loop = GLib.MainLoop()
 
     def test():
-        nonlocal original, replacement, helper_pid, backend, daemon
+        nonlocal original, replacement, helper_pid, suspended_application, backend, daemon
         try:
             connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
             def kwin_ready():
@@ -190,6 +190,9 @@ def run_session(binary):
             window_uuid = original_records()[0]["window_uuid"]
             if codex_mode:
                 original_codex_pid = original_records()[0]["child_pid"]
+                if os.environ.get("XFCE_LIFECYCLE_TEST_LATE_EXIT") == "1":
+                    suspended_application = os.pidfd_open(original_codex_pid)
+                    signal.pidfd_send_signal(suspended_application, signal.SIGSTOP)
                 newer = root / "bin/newer-codex"
                 shutil.copyfile(codex_binary, newer)
                 note = subprocess.check_output(["readelf", "-n", str(newer)], timeout=3).decode()
@@ -265,6 +268,30 @@ def run_session(binary):
                 if last["phase"] in ("failed", "complete"):
                     break
                 time.sleep(0.1)
+            if os.environ.get("XFCE_LIFECYCLE_TEST_LATE_EXIT") == "1":
+                assert last["phase"] == "failed" and "two graceful interrupts" in last["message"], last
+                assert not last["original_closed"], last
+                def hold_released():
+                    current = json.loads(backend.call(owner, worker.TERMINAL_PATH, worker.TERMINAL_INTERFACE,
+                        "GetUpdateStatus", "(s)", [window_uuid])[0])
+                    assert not current["pending"], "Waiting for native failure cleanup"
+                    return True
+                wait_for(hold_released)
+                signal.pidfd_send_signal(suspended_application, signal.SIGCONT)
+                os.close(suspended_application)
+                suspended_application = None
+                def retained_empty_tab():
+                    assert original.poll() is None, "The retained original closed after a delayed child exit"
+                    records = original_records()
+                    assert len(records) == 1 and records[0]["child_pid"] <= 1, records
+                    assert records[0]["input_enabled"], "The failed update left terminal input disabled"
+                    actual = backend.kwin("capture", pid=original.pid, id=saved["id"])
+                    placement_matches(saved, actual, saved["minimized"])
+                    return actual
+                wait_for(retained_empty_tab)
+                print(json.dumps(dict(result="passed", mode="late-application-exit", old_pid=original.pid,
+                    geometry=saved["geometry"], original_retained=True)), flush=True)
+                return
             if last["phase"] != "complete":
                 raise AssertionError(json.dumps(last))
             replacement = last["replacement_pid"]
@@ -373,6 +400,10 @@ def run_session(binary):
         if pid:
             try: os.kill(pid, signal.SIGTERM)
             except ProcessLookupError: pass
+    if suspended_application is not None:
+        try: signal.pidfd_send_signal(suspended_application, signal.SIGCONT)
+        except ProcessLookupError: pass
+        finally: os.close(suspended_application)
     if original is not None and original.poll() is None:
         original.terminate()
         original.wait(timeout=5)
@@ -444,6 +475,8 @@ def main():
             environment["XFCE_LIFECYCLE_TEST_TMUX_SHELL"] = "1"
         if "--without-hold-api" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_NO_HOLD_API"] = "1"
+        if "--late-application-exit" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_LATE_EXIT"] = "1"
         if "--trace-worker" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_TRACE"] = "1"
         result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, "--session", str(binary)],

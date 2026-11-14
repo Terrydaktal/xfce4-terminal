@@ -146,7 +146,8 @@ class Backend:
         if action == "Release": return self.replacement.release()
         if action == "Records": return self.replacement.records()
         if action == "Commit": return self.replacement.commit()
-        if action in ("Discard", "Recover"): return self.replacement.recover()
+        if action in ("Discard", "Recover"):
+            return self.replacement.recover(preserve_original=action == "Recover")
         raise UpdateError("Unknown generic terminal operation")
 
     def publish(self, status):

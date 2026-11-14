@@ -305,7 +305,7 @@ class Replacement:
         placement_matches(self.snapshot["window"], actual, self.snapshot["window"]["minimized"])
         return dict(original_closed=True, replacement_pid=self.replacement.pid, replacement_window_id=actual["id"])
 
-    def recover(self):
+    def recover(self, preserve_original=True):
         try:
             if self.replacement is not None and self.replacement.poll() is None:
                 if self.released:
@@ -314,7 +314,8 @@ class Replacement:
                 else:
                     self.replacement.terminate()
         finally:
-            self.backend.hold_original(False)
+            if not preserve_original:
+                self.backend.hold_original(False)
         return dict(original_closed=self.closed)
 
     def cleanup(self):
