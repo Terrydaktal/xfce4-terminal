@@ -105,6 +105,8 @@ def run_session(binary):
                 contents = contents.replace(b"GetUpdateStatus", b"OldUpdateStatus")
             if os.environ.get("XFCE_LIFECYCLE_TEST_NO_TAB_API") == "1":
                 contents = contents.replace(b"ListTerminals", b"LostTerminals")
+            if os.environ.get("XFCE_LIFECYCLE_TEST_NO_HOLD_API") == "1":
+                contents = contents.replace(b"HoldForUpdate", b"LostForUpdate")
             old.write_bytes(contents)
             old.chmod(0o700)
             environment = os.environ.copy()
@@ -440,6 +442,8 @@ def main():
             environment["XFCE_LIFECYCLE_TEST_NO_TAB_API"] = "1"
         if "--tmux-shell" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_TMUX_SHELL"] = "1"
+        if "--without-hold-api" in sys.argv:
+            environment["XFCE_LIFECYCLE_TEST_NO_HOLD_API"] = "1"
         if "--trace-worker" in sys.argv:
             environment["XFCE_LIFECYCLE_TEST_TRACE"] = "1"
         result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, "--session", str(binary)],

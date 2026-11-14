@@ -127,7 +127,8 @@
         "test_environment_values_and_absence_survive_the_generic_startup_gate",
         "test_pinned_execution_path_is_distinct_from_the_preserved_argv_zero",
         "test_malformed_generic_environment_is_rejected_before_execution",
-        "terminal-update-wayland-codex"
+        "terminal-update-wayland-codex",
+        "terminal-update-wayland-menu-compat"
       ]
     }
   ],

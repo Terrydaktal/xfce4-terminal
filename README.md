@@ -266,6 +266,10 @@ reports across daemon restarts. A shared lock excludes overlapping updates and
 restores. Failure leaves recovery evidence and never blindly repeats a restart.
 Application Launcher's daemon can also replace older windows without `UpdateInPlace`
 or `HoldForUpdate`, using normal CLI startup and exact KWin placement/close.
+The terminal's own update menu selects this same compatibility backend when its
+running process lacks window-hold support; no one-time manual restart is required.
+Its helper continues to provide confirmation and status while the daemon verifies
+the exact original window, tabs and launch target before staging the replacement.
 `ListTerminals` remains useful read-only metadata, not an updater requirement.
 Without it, only a single unambiguous window/PTY session can be reconstructed;
 unsupported or ambiguous sessions are refused before shutdown. An old non-tmux
