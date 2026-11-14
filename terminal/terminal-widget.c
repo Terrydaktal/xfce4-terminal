@@ -47,6 +47,11 @@
 #include "terminal-util.h"
 #include "terminal-widget.h"
 
+#ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
+extern gboolean vte_terminal_get_selection_bounds (VteTerminal *, glong *, glong *,
+                                                    glong *, glong *, gboolean *);
+#endif
+
 
 
 #define MAILTO "mailto:"
@@ -134,6 +139,8 @@ terminal_widget_button_release_event (GtkWidget *widget,
 static gboolean
 terminal_widget_motion_notify_event (GtkWidget *widget,
                                      GdkEventMotion *event);
+static gboolean
+terminal_widget_scroll_event (GtkWidget *widget, GdkEventScroll *event);
 static gboolean
 terminal_widget_enter_notify_event (GtkWidget *widget,
                                     GdkEventCrossing *event);
@@ -272,6 +279,8 @@ struct _TerminalWidget
   pcre2_code_8 *regex_pcre[G_N_ELEMENTS (regex_patterns)];
   TerminalUnearthSearch *unearth_search;
   TerminalMouseSelection mouse_selection;
+  gchar *tmux_selection_pane;
+  pid_t tmux_selection_client;
   gboolean native_right_click;
   gboolean link_selection_drag_pending;
   gdouble link_selection_click_x;
@@ -374,6 +383,7 @@ terminal_widget_class_init (TerminalWidgetClass *klass)
   gtkwidget_class->button_press_event = terminal_widget_button_press_event;
   gtkwidget_class->button_release_event = terminal_widget_button_release_event;
   gtkwidget_class->motion_notify_event = terminal_widget_motion_notify_event;
+  gtkwidget_class->scroll_event = terminal_widget_scroll_event;
   gtkwidget_class->enter_notify_event = terminal_widget_enter_notify_event;
   gtkwidget_class->drag_data_received = terminal_widget_drag_data_received;
   gtkwidget_class->key_press_event = terminal_widget_key_press_event;
@@ -702,6 +712,8 @@ static void
 terminal_widget_finalize (GObject *object)
 {
   TerminalWidget *widget = TERMINAL_WIDGET (object);
+
+  g_free (widget->tmux_selection_pane);
 
 #ifdef HAVE_LIBUTEMPTER
   VtePty *pty = vte_terminal_get_pty (VTE_TERMINAL (widget));
@@ -2919,6 +2931,38 @@ terminal_widget_selection_modifiers (TerminalWidget *widget,
 
 
 static gboolean
+terminal_widget_scroll_event (GtkWidget *widget, GdkEventScroll *event)
+{
+#ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
+  TerminalWidget *terminal_widget = TERMINAL_WIDGET (widget);
+  VteTerminal *terminal = VTE_TERMINAL (widget);
+  glong sx, sy, ex, ey;
+  gboolean rectangle;
+  if ((event->state & gtk_accelerator_get_default_mod_mask ()) == 0
+      && event->direction != GDK_SCROLL_LEFT && event->direction != GDK_SCROLL_RIGHT
+      && vte_terminal_get_selection_bounds (terminal, &sx, &sy, &ex, &ey, &rectangle))
+    {
+      VtePty *pty = vte_terminal_get_pty (terminal);
+      pid_t client = pty != NULL ? tcgetpgrp (vte_pty_get_fd (pty)) : -1;
+      if (client > 0 && terminal_widget_process_application (client) == TERMINAL_FOREGROUND_TMUX)
+        {
+          gchar *pane = terminal_tmux_retain_selection (client, sx, sy, ex, ey, rectangle);
+          if (pane != NULL)
+            {
+              g_free (terminal_widget->tmux_selection_pane);
+              terminal_widget->tmux_selection_pane = pane;
+              terminal_widget->tmux_selection_client = client;
+              /* The server now owns history-relative endpoints. Keeping a
+               * screen-relative VTE overlay would highlight unrelated text. */
+              vte_terminal_unselect_all (terminal);
+            }
+        }
+    }
+#endif
+  return GTK_WIDGET_CLASS (terminal_widget_parent_class)->scroll_event (widget, event);
+}
+
+static gboolean
 terminal_widget_button_release_event (GtkWidget *widget,
                                       GdkEventButton *event)
 {
@@ -3089,13 +3133,26 @@ terminal_widget_button_press_event (GtkWidget *widget,
   if (event->type == GDK_BUTTON_PRESS && event->button == 1)
     {
       gboolean prefer_selection;
+      gboolean native_tmux_selection;
+      guint selection_state = event->state & modifiers;
 
       g_object_get (G_OBJECT (terminal_widget->preferences),
                     "misc-prefer-mouse-selection", &prefer_selection, NULL);
-      if (prefer_selection)
+      /* tmux tracks the outer mouse even for text-only panes. Reuse VTE's
+       * exact word/link selection there, but leave mouse-aware apps in charge.
+       * Resolve ownership only on press, never in motion/output hot paths. */
+      native_tmux_selection = (selection_state == 0 || selection_state == GDK_CONTROL_MASK)
+                              && terminal_widget_tmux_uses_native_context_menu (terminal_widget);
+      if (prefer_selection || native_tmux_selection)
         {
-          if ((event->state & modifiers) == 0)
+          if (selection_state == 0 || (selection_state == GDK_CONTROL_MASK && native_tmux_selection))
             {
+              if (terminal_widget->tmux_selection_pane != NULL)
+                {
+                  terminal_tmux_clear_native_selection (terminal_widget->tmux_selection_client,
+                                                        terminal_widget->tmux_selection_pane);
+                  g_clear_pointer (&terminal_widget->tmux_selection_pane, g_free);
+                }
               terminal_widget->mouse_selection = TERMINAL_MOUSE_SELECTION_LOCAL;
               /* Synthetic Shift must start a new selection, not extend the old one. */
               vte_terminal_unselect_all (VTE_TERMINAL (widget));

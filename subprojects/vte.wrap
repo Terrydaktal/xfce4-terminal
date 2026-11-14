@@ -3,4 +3,4 @@ directory = vte-0.84.1
 source_url = https://download.gnome.org/sources/vte/0.84/vte-0.84.1.tar.xz
 source_filename = vte-0.84.1.tar.xz
 source_hash = aca1caa8478aebcdbb1d67897fb3511eb7601debae6810e16a15b6fa25f31ac8
-diff_files = vte/0001-preserve-active-selection.patch,vte/0002-private-terminal-integration.patch,vte/0003-scrollback-export.patch
+diff_files = vte/0001-preserve-active-selection.patch,vte/0002-private-terminal-integration.patch,vte/0003-scrollback-export.patch,vte/0004-tmux-selection-bounds.patch

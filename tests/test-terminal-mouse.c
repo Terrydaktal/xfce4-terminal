@@ -1,8 +1,13 @@
 /* Exercise actual VTE selection and PTY mouse reports. */
 #include "terminal-test-utils.h"
 
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
+
+static gchar *self;
 
 static gchar *
 read_input (Fixture *fixture)
@@ -278,6 +283,241 @@ single_click (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
 }
 
 static void
+selection_tmux_command (const gchar *binary, const gchar *socket, const gchar *command)
+{
+  GSubprocess *process = g_subprocess_new (G_SUBPROCESS_FLAGS_NONE, NULL,
+                                          binary, "-N", "-S", socket, command, NULL);
+  g_assert_nonnull (process);
+  g_assert_true (g_subprocess_wait_check (process, NULL, NULL));
+  g_object_unref (process);
+}
+
+
+static gchar *
+selection_tmux_run (const gchar *binary, const gchar *socket, const gchar *const *arguments)
+{
+  g_autoptr (GPtrArray) argv = g_ptr_array_new ();
+  g_ptr_array_add (argv, (gpointer) binary);
+  g_ptr_array_add (argv, "-N");
+  g_ptr_array_add (argv, "-S");
+  g_ptr_array_add (argv, (gpointer) socket);
+  for (guint i = 0; arguments[i] != NULL; i++)
+    g_ptr_array_add (argv, (gpointer) arguments[i]);
+  g_ptr_array_add (argv, NULL);
+  g_autoptr (GSubprocess) process = g_subprocess_newv ((const gchar *const *) argv->pdata,
+                                                    G_SUBPROCESS_FLAGS_STDOUT_PIPE, NULL);
+  gchar *output = NULL;
+  g_assert_nonnull (process);
+  g_assert_true (g_subprocess_communicate_utf8 (process, NULL, NULL, &output, NULL, NULL));
+  g_assert_true (g_subprocess_get_successful (process));
+  return output;
+}
+
+static void
+selection_through_tmux (Fixture *fixture, gconstpointer data)
+{
+  guint mode = GPOINTER_TO_UINT (data);
+  g_autofree gchar *binary = g_getenv ("TEST_TMUX") != NULL
+                            ? g_strdup (g_getenv ("TEST_TMUX")) : g_find_program_in_path ("tmux");
+  g_autofree gchar *directory = g_dir_make_tmp ("xfce-tmux-selection-XXXXXX", NULL);
+  g_autofree gchar *socket = g_build_filename (directory, "server.sock", NULL);
+  g_autofree gchar *config = g_build_filename (directory, "tmux.conf", NULL);
+  g_autofree gchar *output_file = g_build_filename (directory, "output", NULL);
+  g_autofree gchar *input_file = g_build_filename (directory, "input", NULL);
+  g_autofree gchar *wrapped = g_strnfill (vte_terminal_get_column_count (fixture->terminal) + 20, 'w');
+  g_autofree gchar *payload = g_strdup_printf (
+    "\033[H\033[2J'\033]8;;https://example.org/target\033\\Open (archive) + notes\033]8;;\033\\'\r\n"
+    "Read 'https://example.org/(archive)/file?q=a+b#anchor'\r\n"
+    "words alpha_beta-name.test end\r\n"
+    "(\033]8;;https://example.org/unicode\033\\\xe4\xb8\xad" "e\xcc\x81 label\033]8;;\033\\)\r\n"
+    "'\033]8;;https://example.org/wrapped\033\\%s\033]8;;\033\\'\r\nSELECTION-READY", wrapped);
+  const struct { gdouble column; gdouble row; } clicks[] = {
+    { 3.1, 0.5 }, { 12.1, 0.5 }, { 19.1, 1.5 }, { 13.1, 2.5 },
+    { 2.1, 3.5 }, { 8.1, 4.5 }, { 3.1, 5.5 },
+  };
+  g_auto (GStrv) expected = g_new0 (gchar *, G_N_ELEMENTS (clicks) + 1);
+  pid_t client;
+  gint status;
+  gboolean ready = FALSE;
+
+  if (binary == NULL)
+    {
+      g_test_skip ("tmux is unavailable");
+      remove_test_directory (directory);
+      return;
+    }
+  g_object_set (fixture->preferences, "misc-prefer-mouse-selection", FALSE,
+                "misc-highlight-urls", TRUE, NULL);
+  vte_terminal_set_word_char_exceptions (fixture->terminal, "-A-Za-z0-9_./?%&#+_~");
+  /* Fixture data also enables mouse tracking; the reference is a plain shell. */
+  vte_terminal_feed (fixture->terminal, "\033[?1000l\033[?1002l\033[?1003l\033[?1006l", -1);
+  vte_terminal_feed (fixture->terminal, payload, -1);
+  settle ();
+  /* The un-multiplexed widget is the independent oracle for every boundary. */
+  for (guint i = 0; i < G_N_ELEMENTS (clicks); i++)
+    {
+      double_click_position (fixture, clicks[i].column, clicks[i].row);
+      expected[i] = vte_terminal_get_text_selected (fixture->terminal, VTE_FORMAT_TEXT);
+      g_assert_nonnull (expected[i]);
+      g_assert_cmpstr (expected[i], !=, "");
+    }
+  g_assert_cmpstr (expected[0], ==, "Open (archive) + notes");
+  g_assert_cmpstr (expected[2], ==, "https://example.org/(archive)/file?q=a+b#anchor");
+  mouse_event_at (fixture, GDK_BUTTON_PRESS, 1, 0, 3.1, 2.5);
+  mouse_event_at (fixture, GDK_3BUTTON_PRESS, 1, GDK_BUTTON1_MASK, 3.1, 2.5);
+  mouse_event_at (fixture, GDK_BUTTON_RELEASE, 1, GDK_BUTTON1_MASK, 3.1, 2.5);
+  g_autofree gchar *expected_line = vte_terminal_get_text_selected (fixture->terminal, VTE_FORMAT_TEXT);
+  mouse_event_at (fixture, GDK_BUTTON_PRESS, 1, GDK_CONTROL_MASK, 6.1, 2.5);
+  mouse_event_at (fixture, GDK_MOTION_NOTIFY, 1, GDK_CONTROL_MASK | GDK_BUTTON1_MASK, 14.1, 3.5);
+  mouse_event_at (fixture, GDK_BUTTON_RELEASE, 1, GDK_CONTROL_MASK | GDK_BUTTON1_MASK, 14.1, 3.5);
+  g_autofree gchar *expected_box = vte_terminal_get_text_selected (fixture->terminal, VTE_FORMAT_TEXT);
+  vte_terminal_unselect_all (fixture->terminal);
+  vte_terminal_feed (fixture->terminal, "\033[H\033[2J", -1);
+  settle ();
+  g_assert_true (g_file_set_contents (output_file, payload, -1, NULL));
+  if (mode >= 4)
+    {
+      g_autoptr (GString) history = g_string_new (NULL);
+      for (guint i = 0; i < 80; i++)
+        g_string_append_printf (history, "older row %u\r\n", i);
+      g_string_append (history, payload);
+      g_assert_true (g_file_set_contents (output_file, history->str, history->len, NULL));
+    }
+  g_assert_true (g_file_set_contents (config,
+    "set -g status off\nset -g mouse on\nset -s set-clipboard off\n"
+    "set -as terminal-features ',xterm*:hyperlinks'\n"
+    "set -s exit-unattached on\nset -g destroy-unattached on\n", -1, NULL));
+  client = fork ();
+  g_assert_cmpint (client, >=, 0);
+  if (client == 0)
+    {
+      if (setsid () < 0 || ioctl (fixture->slave, TIOCSCTTY, 0) < 0)
+        _exit (126);
+      for (gint fd = 0; fd <= 2; fd++)
+        if (dup2 (fixture->slave, fd) < 0)
+          _exit (126);
+      g_unsetenv ("TMUX");
+      g_unsetenv ("TMUX_PANE");
+      g_setenv ("TERM", "xterm-256color", TRUE);
+      execl (binary, "tmux", "-S", socket, "-f", config, "new-session", "-s", "selection-test",
+             "--", self, "--selection-pane", output_file, input_file,
+             mode == 2 || mode == 3 ? "mouse" : "plain", NULL);
+      _exit (127);
+    }
+  gint64 deadline = g_get_monotonic_time () + 5 * G_USEC_PER_SEC;
+  do
+    {
+      g_autofree gchar *text = NULL;
+      settle ();
+#if VTE_CHECK_VERSION(0, 80, 0)
+      text = vte_terminal_get_text_format (fixture->terminal, VTE_FORMAT_TEXT);
+#else
+      text = vte_terminal_get_text (fixture->terminal, NULL, NULL, NULL);
+#endif
+      ready = text != NULL && strstr (text, "SELECTION-READY") != NULL
+              && g_file_test (input_file, G_FILE_TEST_EXISTS);
+    }
+  while (!ready && g_get_monotonic_time () < deadline);
+  g_assert_true (ready);
+  if (mode == 1 || mode == 3)
+    {
+      selection_tmux_command (binary, socket, "copy-mode");
+      settle ();
+    }
+  GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
+  gtk_clipboard_set_text (clipboard, "unchanged clipboard", -1);
+  for (guint i = 0; i < (mode == 2 ? 1 : G_N_ELEMENTS (clicks)); i++)
+    {
+      gint64 started = g_get_monotonic_time ();
+      g_test_message ("Selection case %u", i);
+      double_click_position (fixture, clicks[i].column, clicks[i].row);
+      if (mode == 2)
+        g_assert_false (vte_terminal_get_has_selection (fixture->terminal));
+      else
+        {
+          /* Check synchronously, before tmux's 300ms click timer can fire. */
+          assert_selection (fixture, expected[i]);
+          g_assert_cmpint (g_get_monotonic_time () - started, <, 200000);
+        }
+      g_autofree gchar *text = gtk_clipboard_wait_for_text (clipboard);
+      g_assert_cmpstr (text, ==, "unchanged clipboard");
+    }
+  settle ();
+  g_autofree gchar *input = NULL;
+  g_assert_true (g_file_get_contents (input_file, &input, NULL, NULL));
+  if (mode == 2)
+    g_assert_nonnull (strstr (input, "\033[<0;"));
+  else
+    g_assert_cmpstr (input, ==, "");
+  for (guint selection = 0; mode == 4 && selection < G_N_ELEMENTS (clicks) + 2; selection++)
+    {
+      g_test_message ("Retaining selection %u", selection);
+      /* A completed native selection must become a history selection before
+       * the wheel redraws cells. It must not copy merely because it finished. */
+      const gchar *selected;
+      if (selection < G_N_ELEMENTS (clicks))
+        {
+          double_click_position (fixture, clicks[selection].column, clicks[selection].row);
+          selected = expected[selection];
+        }
+      else if (selection == G_N_ELEMENTS (clicks))
+        {
+          mouse_event_at (fixture, GDK_BUTTON_PRESS, 1, 0, 3.1, 2.5);
+          mouse_event_at (fixture, GDK_3BUTTON_PRESS, 1, GDK_BUTTON1_MASK, 3.1, 2.5);
+          mouse_event_at (fixture, GDK_BUTTON_RELEASE, 1, GDK_BUTTON1_MASK, 3.1, 2.5);
+          selected = expected_line;
+        }
+      else
+        {
+          mouse_event_at (fixture, GDK_BUTTON_PRESS, 1, GDK_CONTROL_MASK, 6.1, 2.5);
+          mouse_event_at (fixture, GDK_MOTION_NOTIFY, 1, GDK_CONTROL_MASK | GDK_BUTTON1_MASK, 14.1, 3.5);
+          mouse_event_at (fixture, GDK_BUTTON_RELEASE, 1, GDK_CONTROL_MASK | GDK_BUTTON1_MASK, 14.1, 3.5);
+          selected = expected_box;
+        }
+      assert_selection (fixture, selected);
+      mouse_event (fixture, GDK_SCROLL, 0, 0, 3.1);
+      settle ();
+      const gchar *state[] = { "display-message", "-p", "#{selection_native}:#{selection_active}", NULL };
+      g_autofree gchar *retained = selection_tmux_run (binary, socket, state);
+      g_assert_cmpstr (g_strstrip (retained), ==, "1:0");
+      const gchar *up[] = { "send-keys", "-X", "-N", "200", "scroll-up", NULL };
+      const gchar *down[] = { "send-keys", "-X", "-N", "200", "scroll-down", NULL };
+      const gchar *copy[] = { "send-keys", "-X", "copy-selection-no-clear", ";", "show-buffer", NULL };
+      for (guint i = 0; i < 2; i++)
+        {
+          g_free (selection_tmux_run (binary, socket, i == 0 ? up : down));
+          /* Match the user's wheel bindings, which request a full repaint. */
+          selection_tmux_command (binary, socket, "refresh-client");
+          g_autofree gchar *text = gtk_clipboard_wait_for_text (clipboard);
+          g_assert_cmpstr (text, ==, "unchanged clipboard");
+          g_autofree gchar *copied = selection_tmux_run (binary, socket, copy);
+          g_assert_cmpstr (copied, ==, selected);
+        }
+      deadline = g_get_monotonic_time () + 5 * G_USEC_PER_SEC;
+      do
+        {
+          settle ();
+#if VTE_CHECK_VERSION(0, 80, 0)
+          g_autofree gchar *screen = vte_terminal_get_text_format (fixture->terminal, VTE_FORMAT_TEXT);
+#else
+          g_autofree gchar *screen = vte_terminal_get_text (fixture->terminal, NULL, NULL, NULL);
+#endif
+          ready = g_str_has_prefix (screen, "'Open (archive) + notes'");
+        }
+      while (!ready && g_get_monotonic_time () < deadline);
+      g_assert_true (ready);
+      double_click_position (fixture, clicks[0].column, clicks[0].row);
+      assert_selection (fixture, expected[0]);
+      g_free (retained);
+      retained = selection_tmux_run (binary, socket, state);
+      g_assert_cmpstr (g_strstrip (retained), ==, "0:0");
+    }
+  selection_tmux_command (binary, socket, "kill-server");
+  g_assert_cmpint (waitpid (client, &status, 0), ==, client);
+  remove_test_directory (directory);
+}
+
+static void
 link_labels_double_click (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
 {
   const gchar *labels[] = {
@@ -504,6 +744,27 @@ hyperlink_shortcuts (Fixture *fixture, gconstpointer data G_GNUC_UNUSED)
 int
 main (int argc, char **argv)
 {
+  if (argc == 5 && g_strcmp0 (argv[1], "--selection-pane") == 0)
+    {
+      struct termios attrs;
+      g_autofree gchar *output = NULL;
+      gchar buffer[1024];
+      ssize_t length;
+      gint input = open (argv[3], O_WRONLY | O_CREAT | O_APPEND, 0600);
+      g_assert_cmpint (input, >=, 0);
+      g_assert_cmpint (tcgetattr (STDIN_FILENO, &attrs), ==, 0);
+      cfmakeraw (&attrs);
+      g_assert_cmpint (tcsetattr (STDIN_FILENO, TCSANOW, &attrs), ==, 0);
+      g_assert_true (g_file_get_contents (argv[2], &output, NULL, NULL));
+      g_assert_cmpint (write (STDOUT_FILENO, output, strlen (output)), ==, strlen (output));
+      if (g_strcmp0 (argv[4], "mouse") == 0)
+        g_assert_cmpint (write (STDOUT_FILENO, "\033[?1002h\033[?1006h", 16), ==, 16);
+      while ((length = read (STDIN_FILENO, buffer, sizeof buffer)) > 0)
+        g_assert_cmpint (write (input, buffer, length), ==, length);
+      close (input);
+      return 0;
+    }
+  self = g_file_read_link ("/proc/self/exe", NULL);
   if (g_getenv ("TERMINAL_MOUSE_TEST_SESSION") == NULL)
     return run_isolated (argc, argv);
 
@@ -533,6 +794,13 @@ main (int argc, char **argv)
 #endif
   g_test_add ("/mouse/default-selection-link", Fixture, NULL, setup, default_selection_link, teardown);
   g_test_add ("/mouse/single-click", Fixture, GINT_TO_POINTER (1), setup, single_click, teardown);
+  g_test_add ("/mouse/tmux-native-selection", Fixture, NULL, setup, selection_through_tmux, teardown);
+  g_test_add ("/mouse/tmux-native-selection-in-copy-mode", Fixture, GUINT_TO_POINTER (1), setup, selection_through_tmux, teardown);
+  g_test_add ("/mouse/tmux-native-selection-in-mouse-app-copy-mode", Fixture, GUINT_TO_POINTER (3), setup, selection_through_tmux, teardown);
+  g_test_add ("/mouse/tmux-mouse-app-keeps-clicks", Fixture, GUINT_TO_POINTER (2), setup, selection_through_tmux, teardown);
+#ifdef HAVE_PRIVATE_VTE_SELECTION_FIX
+  g_test_add ("/mouse/tmux-selection-survives-scrolling", Fixture, GUINT_TO_POINTER (4), setup, selection_through_tmux, teardown);
+#endif
   g_test_add ("/mouse/hyperlink-shortcuts", Fixture, GINT_TO_POINTER (1), setup, hyperlink_shortcuts, teardown);
   return g_test_run ();
 }

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "scope": "XFCE-native selections retained in local tmux history",
+  "artifacts": ["Meson debugoptimized xfce4-terminal with private VTE", "rebuilt tmux fork"],
+  "contracts": [
+    {"id": "TMUX-NATIVE-01", "behavior": "Words, OSC8 labels, detected URLs, Unicode and wrapped labels select immediately with the same boundaries as an un-multiplexed widget", "tests": ["/mouse/tmux-native-selection", "/mouse/tmux-native-selection-in-copy-mode"]},
+    {"id": "TMUX-NATIVE-02", "behavior": "Before scrolling redraws cells, a completed native selection transfers to history coordinates, remains copyable offscreen and at the live bottom, and can be replaced without moving the viewport or copying on release; line and Ctrl-drag rectangle selections preserve native newline behavior", "tests": ["/mouse/tmux-selection-survives-scrolling"]},
+    {"id": "TMUX-NATIVE-03", "behavior": "Mouse-aware applications retain mouse input while tmux copy mode permits native selection", "tests": ["/mouse/tmux-mouse-app-keeps-clicks", "/mouse/tmux-native-selection-in-mouse-app-copy-mode"]}
+  ],
+  "test_owners": {"gui": "tests/test-terminal-mouse.c", "server": "../tmux/tests/test_native_selection.py"},
+  "environments": {
+    "automated_gui": "Private HOME/XDG/session bus and Xvfb, real VTE widget, PTYs and explicit test-owned tmux sockets",
+    "native_wayland": "Manual desktop gesture and cross-application clipboard checks have not been run; live sessions are never test fixtures"
+  }
+}

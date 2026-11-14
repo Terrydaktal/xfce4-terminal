@@ -365,6 +365,22 @@ double-click; they do not add filesystem checks or output/hover processing.
 
 ### Mouse Selection With tmux
 
+In an attached local tmux shell, non-mouse-aware pane or tmux copy mode, ordinary
+left-button selection automatically uses XFCE's native selector. Double-click
+selects the same complete word or displayed hyperlink as outside tmux, without
+waiting for tmux's triple-click timer. Selection alone does not copy to the
+clipboard. Mouse-aware applications retain their clicks; Termux and remote
+SSH/Mosh attachments are unchanged.
+
+With the rebuilt tmux server, the first unmodified wheel scroll transfers a
+completed native selection into tmux's history using its exact cell boundaries.
+The highlight follows the text offscreen and back, including wrapped links and
+rectangles, and stays selected when returning to the live bottom. Starting a new
+selection clears the previous highlight; typing resumes the live pane as before.
+Scrolling never copies text. This handoff requires the fork's `select-range`
+copy-mode command; updating only the terminal or tmux client cannot add it to an
+already-running older server. Existing sessions are not restarted automatically.
+
 General > Clipboard has a "Prefer text selection when applications capture the
 mouse" option (`misc-prefer-mouse-selection`, disabled by default). When enabled,
 ordinary left dragging makes a terminal selection that can be copied with the
@@ -397,8 +413,9 @@ moving the viewport. Mouse-aware applications retain right-click input; Shift+ri
 opens the terminal menu instead, just as outside tmux.
 
 The terminal checks the active pane of its attached local tmux client, using the
-existing owner-checked explicit `-S` socket and 250 ms query limit. Only right-click
-performs this query; ordinary clicks, scrolling and pointer movement do not. If the
+existing owner-checked explicit `-S` socket and 250 ms query limit. Unmodified
+left-button presses and right-click perform this query; scrolling, pointer
+movement and terminal output do not. If the
 pane cannot be verified, normal VTE handling remains in force and Shift+right-click
 is still available. Remote SSH/Mosh tmux sessions are not guessed from local state.
 The entire locally handled press/motion/release stays local, so no orphan mouse

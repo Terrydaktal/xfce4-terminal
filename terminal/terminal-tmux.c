@@ -270,3 +270,88 @@ terminal_tmux_copy_selection (pid_t client_pid)
   return FALSE;
 #endif
 }
+
+static gchar *
+terminal_tmux_transfer_selection (pid_t client_pid, glong sx, glong sy,
+                                 glong ex, glong ey, gboolean rectangle)
+{
+#ifdef __linux__
+  g_autofree gchar *socket = client_socket (client_pid);
+  g_autofree gchar *executable = g_strdup_printf ("/proc/%d/exe", (gint) client_pid);
+  g_autofree gchar *output = NULL;
+  g_auto (GStrv) lines = NULL;
+
+  if (socket == NULL)
+    return NULL;
+  output = query_clients (executable, socket,
+    "#{client_pid} #{client_name} #{pane_id} #{mouse_any_flag} "
+    "#{?#{==:#{pane_mode},copy-mode},1,0} #{pane_left} #{pane_top} #{pane_width} #{pane_height} "
+    "#{?window_offset_x,#{window_offset_x},0} #{?window_offset_y,#{window_offset_y},0} "
+    "#{?#{==:#{status-position},top},#{status},0}");
+  if (output == NULL)
+    return NULL;
+  lines = g_strsplit (output, "\n", -1);
+  for (guint i = 0; lines[i] != NULL; i++)
+    {
+      long client;
+      guint mouse, copy, left, top, width, height, ox, oy, status;
+      gchar target[4096], pane[32], extra;
+      if (sscanf (lines[i], "%ld %4095s %31s %u %u %u %u %u %u %u %u %u %c",
+                  &client, target, pane, &mouse, &copy, &left, &top, &width, &height,
+                  &ox, &oy, &status, &extra) != 12 || client != client_pid
+          || (mouse != 0 && copy == 0) || pane[0] != '%')
+        continue;
+      glong x0 = sx - (glong) left + ox, x1 = ex - (glong) left + ox;
+      glong y0 = sy - (glong) top + oy - status, y1 = ey - (glong) top + oy - status;
+      if (x0 < 0 || x1 < 0 || x0 > width || x1 > width
+          || y0 < 0 || y1 < y0 || y1 > height
+          || (y1 == height && (x1 != 0 || rectangle)))
+        return NULL;
+      g_autofree gchar *start_x = g_strdup_printf ("%ld", x0);
+      g_autofree gchar *start_y = g_strdup_printf ("%ld", y0);
+      g_autofree gchar *end_x = g_strdup_printf ("%ld", x1);
+      g_autofree gchar *end_y = g_strdup_printf ("%ld", y1);
+      const gchar *argv[] = { executable, "-N", "-S", socket,
+        "copy-mode", "-t", pane, ";", "send-keys", "-c", target, "-t", pane, "-X",
+        "select-range", rectangle ? "-r" : "--", start_x, start_y, end_x, end_y,
+        ";", "display-message", "-p", "-t", pane,
+        "#{selection_native}", NULL };
+      g_autofree gchar *result = query_command (argv);
+      /* An older server silently ignores unknown copy commands. Require an
+       * explicit acknowledgement before giving up the native highlight. */
+      if (result != NULL && strcmp (g_strstrip (result), "1") == 0)
+        return g_strdup (pane);
+      return NULL;
+    }
+#else
+  (void) client_pid; (void) sx; (void) sy; (void) ex; (void) ey; (void) rectangle;
+#endif
+  return NULL;
+}
+
+gchar *
+terminal_tmux_retain_selection (pid_t client_pid, glong sx, glong sy,
+                               glong ex, glong ey, gboolean rectangle)
+{
+  return terminal_tmux_transfer_selection (client_pid, sx, sy, ex, ey, rectangle);
+}
+
+
+void
+terminal_tmux_clear_native_selection (pid_t client_pid, const gchar *pane)
+{
+#ifdef __linux__
+  g_autofree gchar *socket = client_socket (client_pid);
+  g_autofree gchar *executable = g_strdup_printf ("/proc/%d/exe", (gint) client_pid);
+  g_autofree gchar *condition = g_strdup_printf (
+    "#{&&:#{==:#{pane_id},%s},#{selection_native}}", pane);
+  if (socket == NULL)
+    return;
+  g_autofree gchar *command = g_strdup_printf ("send-keys -t %s -X clear-selection", pane);
+  const gchar *argv[] = { executable, "-N", "-S", socket, "if-shell", "-F", "-t", pane,
+    condition, command, NULL };
+  g_autofree gchar *result = query_command (argv);
+#else
+  (void) client_pid; (void) pane;
+#endif
+}

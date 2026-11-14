@@ -1,0 +1,48 @@
+--- a/src/vtegtk.cc
++++ b/src/vtegtk.cc
+@@ -6649,6 +6649,45 @@
+         return false;
+ }
+ 
++extern "C" {
++_VTE_PUBLIC gboolean
++vte_terminal_get_selection_bounds(VteTerminal* terminal, glong* sx, glong* sy,
++                                  glong* ex, glong* ey, gboolean* rectangle) noexcept;
++}
++
++/* Private XFCE integration: exact cell boundaries, never a text search. Rows
++ * are relative to the visible viewport; the end column is exclusive. */
++static gboolean
++selection_bounds(VteTerminal* terminal, glong* sx, glong* sy,
++                 glong* ex, glong* ey, gboolean* rectangle) noexcept
++try
++{
++        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
++        auto const impl = IMPL(terminal);
++        auto const selection = impl->m_selection_resolved;
++        if (impl->m_selecting || selection.empty())
++                return false;
++        auto const top = glong(impl->m_screen->scroll_delta);
++        *sx = selection.start_column();
++        *sy = selection.start_row() - top;
++        *ex = selection.end_column();
++        *ey = selection.end_row() - top;
++        *rectangle = impl->m_selection_block_mode;
++        return true;
++}
++catch (...)
++{
++        vte::log_exception();
++        return false;
++}
++
++gboolean
++vte_terminal_get_selection_bounds(VteTerminal* terminal, glong* sx, glong* sy,
++                                  glong* ex, glong* ey, gboolean* rectangle) noexcept
++{
++        return selection_bounds(terminal, sx, sy, ex, ey, rectangle);
++}
++
+ /**
+  * vte_terminal_get_text_selected:
+  * @terminal: a #VteTerminal
